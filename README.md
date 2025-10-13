@@ -103,13 +103,15 @@ The script will try to find the path of your CARLA and OpenCDA installation to b
 
 `Python_Interpreter=/path/to/anaconda3/envs/msvan3t_carla/bin/python3` if using conda or `Python_Interpreter=python3.7` otherwise.
 
-In case this is the first time using either CARLA or OpenCDA the script will install them prompting for confirmation in each case. It is highly recommended to install OpenCDA with conda.
-Once the script finishes its execution the user should build the project again with `./ns3 build`.
+In case this is the first time using either CARLA or OpenCDA, the script will install them, prompting for confirmation in each case. It is highly recommended to install OpenCDA with conda.
+
+Once the script finishes its execution, it is recommended to build only the simulation scripts for CARLA's usage instead of the whole project (i.e., run `./ns3 build "name-of-CARLA-example` instead of `./ns3 build`).
+This permits avoiding libraries and dependency issues coming from other parts of the simulator, so that the CARLA simulations can be properly run.
 
 **Possible issues with CARLA and OpenCDA installation**
 
-Below is a list of possible issues that can rise during the configuration and possible way to prevent/solve them:
-- In case OpenCDA was already present inside the VaN3Twin folder from previous runs of the script `switch_ms-van3t-CARLA.sh`, it is recommended to clean the cache of OpenCDA's folder before running again the installation script, with the command: `sudo rm -r OpenCDA/cache/`.
+Below is a list of possible issues that can arise during the configuration and possible ways to prevent/solve them:
+- In case OpenCDA was already present inside the VaN3Twin folder from previous runs of the script `switch_ms-van3t-CARLA.sh`, it is recommended to clean the cache of OpenCDA's folder before running again the installation script again, with the command: `sudo rm -r OpenCDA/cache/`.
 - In case the anaconda virtual environment `msvan3t_carla` was already present in your system from previous runs of the script `switch_ms-van3t-CARLA.sh`, it is recommended to delete it before running again the installation script, with `conda remove -n msvan3t_carla --all` or `sudo rm -r ~/anaconda3/envs/environment_folder/`.
 - The anaconda environment solution steps (i.e., the prints `Solving environment:` in the installation phase) might take a while to complete, especially if it is not the first time you try to install the packages. It is normal to wait for some minutes.
 - There is an issue encountered in some edge cases, in which the configuration file to use OpenCDA's perception module is not working properly (`ms_van3t_example_ml`). We are still investigating the problem, since it happens only in some particular situations. To use CARLA and OpenCDA in any case, we suggest to adopt the default OpenCDA's configuration file (`ms_van3t_example`).

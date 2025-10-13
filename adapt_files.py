@@ -303,7 +303,8 @@ def switch_to_base():
     """
     
     subprocess.run(["rm", "-rf", "src/"])
-    subprocess.run(["cp", "-r", "src-backup/" "src/"])
+    subprocess.run(["cp", "-r", "src-backup/", "src/"])
+    subprocess.run(["rm", "-rf", "src-backup/"])
 
     if os.path.exists("aux-files/current-mode.txt"):
         os.remove("aux-files/current-mode.txt")

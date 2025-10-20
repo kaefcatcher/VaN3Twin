@@ -42,9 +42,7 @@
 #include "ns3/vehicle-visualizer-module.h"
 #include "ns3/MetricSupervisor.h"
 #include "ns3/sionna-helper.h"
-#include "ns3/traci-module.h"
 #include "ns3/cv2x_lte-v2x-helper.h"
-#include "ns3/internet-module.h"
 #include "ns3/cv2x-module.h"
 #include <ns3/node-list.h>
 #include <unistd.h>

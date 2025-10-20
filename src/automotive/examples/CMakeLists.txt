@@ -50,8 +50,8 @@ build_lib_example(
 )
 
 build_lib_example(
-    NAME v2v-emergencyVehicleAlert-cv2x
-    SOURCE_FILES v2v-emergencyVehicleAlert-cv2x.cc
+    NAME v2v-emergencyVehicleAlert-ltev2x
+    SOURCE_FILES v2v-emergencyVehicleAlert-ltev2x.cc
     LIBRARIES_TO_LINK
     ${libcarla}
     ${libautomotive}
@@ -177,6 +177,13 @@ build_lib_example(
        ${libautomotive}
 )
 
+#build_lib_example(
+#        NAME v2v-coexistence-80211p-ltev2x
+#        SOURCE_FILES v2v-coexistence-80211p-ltev2x.cc
+#        LIBRARIES_TO_LINK
+#        ${libautomotive}
+#)
+
 build_lib_example(
         NAME v2v-cam-exchange-sionna-80211p
         SOURCE_FILES v2v-cam-exchange-sionna-80211p.cc
@@ -192,8 +199,8 @@ build_lib_example(
 )
 
 build_lib_example(
-        NAME v2v-cam-exchange-sionna-cv2x
-        SOURCE_FILES v2v-cam-exchange-sionna-cv2x.cc
+        NAME v2v-cam-exchange-sionna-ltev2x
+        SOURCE_FILES v2v-cam-exchange-sionna-ltev2x.cc
         LIBRARIES_TO_LINK
         ${libautomotive}
 )

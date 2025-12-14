@@ -86,9 +86,12 @@ int
 main (int argc, char *argv[])
 {
 
-  std::string sumo_folder = "src/automotive/examples/sumo_files_v2v_map/";
-  std::string mob_trace = "cars.rou.xml";
-  std::string sumo_config ="src/automotive/examples/sumo_files_v2v_map/map.sumo.cfg";
+  // std::string sumo_folder = "src/automotive/examples/sumo_files_v2v_map/";
+  // std::string mob_trace = "cars.rou.xml";
+  // std::string sumo_config ="src/automotive/examples/sumo_files_v2v_map/map.sumo.cfg";
+  std::string sumo_folder = "src/automotive/examples/sumo_files_v2v_accident/";
+  std::string mob_trace = "simple.rou.xml";
+  std::string sumo_config ="src/automotive/examples/sumo_files_v2v_accident/simple.sumo.cfg";
 
   /*** 0.a App Options ***/
   bool verbose = true;

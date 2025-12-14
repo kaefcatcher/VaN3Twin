@@ -166,7 +166,7 @@ void DCC::reactiveDCC()
   // If CBR sharing is available
   if (m_CBR_G[0] == -1 && m_CBR_G[1] == -1)
     {
-      currentCBR = m_CBG_L0_Hop[0];
+      currentCBR = m_CBR_L0_Hop[0];
     }
   else
     {

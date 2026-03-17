@@ -100,7 +100,37 @@ emergencyVehicleAlert::GetTypeId (void)
               MakeBooleanAccessor (&emergencyVehicleAlert::m_send_cam), MakeBooleanChecker ())
           .AddAttribute (
               "SendCPM", "To enable/disable the transmission of CPM messages", BooleanValue (true),
-              MakeBooleanAccessor (&emergencyVehicleAlert::m_send_cpm), MakeBooleanChecker ());
+              MakeBooleanAccessor (&emergencyVehicleAlert::m_send_cpm), MakeBooleanChecker ())
+          .AddAttribute (
+              "HardBrakeThreshold",
+              "Acceleration threshold (m/s^2) below which hard braking is detected",
+              DoubleValue (-4.0),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_hard_brake_threshold),
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "CollisionRiskDistance",
+              "Distance threshold (m) for collision risk detection with leading vehicle",
+              DoubleValue (20.0),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_collision_risk_distance),
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "EventCheckInterval",
+              "Interval (s) for periodic event detection checks",
+              DoubleValue (0.1),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_event_check_interval),
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "EthicalBraking",
+              "Enable ethical V2X braking fields (maxDeceleration, brakingStartTime)",
+              BooleanValue (false),
+              MakeBooleanAccessor (&emergencyVehicleAlert::m_ethical_braking_enabled),
+              MakeBooleanChecker ())
+          .AddAttribute (
+              "VehicleMass",
+              "Vehicle mass in kg for DENM alacarte container",
+              DoubleValue (1500.0),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_vehicle_mass),
+              MakeDoubleChecker<double> ());
   return tid;
 }
 
@@ -118,10 +148,17 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_denm_received = 0;
   m_denm_intertime = 0;
 
-  m_distance_threshold =
-      75; // Distance used in GeoNet to determine the radius of the circumference arounf the emergency vehicle where the DENMs are valid
-  m_heading_threshold =
-      45; // Max heading angle difference between the normal vehicles and the emergenecy vehicle, that triggers a reaction in the normal vehicles
+  m_distance_threshold = 75;
+  m_heading_threshold = 45;
+
+  m_prev_speed = 0.0;
+  m_is_event_active = false;
+  m_active_action_id = {};
+  m_hard_brake_threshold = -4.0;
+  m_collision_risk_distance = 20.0;
+  m_event_check_interval = 0.1;
+  m_vehicle_mass = 1500.0;
+  m_ethical_braking_enabled = false;
 }
 
 emergencyVehicleAlert::~emergencyVehicleAlert ()
@@ -140,12 +177,6 @@ void
 emergencyVehicleAlert::StartApplication (void)
 {
   NS_LOG_FUNCTION (this);
-
-  /*
-     * In this example, the vehicle can be either of type "passenger" or of type "emergency" (see cars.rou.xml in SUMO folder inside examples/sumo_files_v2v_map)
-     * All the vehicles broadcast CAM messages. When a "passenger" car receives a CAM from an "emergency" vehicle, it checks the distance between them and
-     * the difference in heading, and if it considers it to be close, it takes proper actions to facilitate the takeover maneuver.
-     */
 
   /* Save the vehicles informations */
   m_id = m_client->GetVehicleId (this->GetNode ());
@@ -209,9 +240,6 @@ emergencyVehicleAlert::StartApplication (void)
     }
   else // m_model=="cv2x"
     {
-      /* The C-V2X model requires the socket to be bind to "any" IPv4 address, and to be connected to the
-         * IP address of the transmitting node. Then, the model will take care of broadcasting the packets.
-        */
       if (m_socket->Bind (InetSocketAddress (Ipv4Address::GetAny (), 19)) == -1)
         {
           NS_FATAL_ERROR ("Failed to bind client socket for C-V2X");
@@ -226,8 +254,7 @@ emergencyVehicleAlert::StartApplication (void)
   else if (m_type == "emergency")
     {
       stationtype = StationType_specialVehicle;
-      m_LDM
-          ->enablePolygons (); // Uncomment to enable detected object polygon visualization for this specific vehicle
+      m_LDM->enablePolygons ();
     }
   else
     stationtype = StationType_unknown;
@@ -264,19 +291,6 @@ emergencyVehicleAlert::StartApplication (void)
   m_cpService.setRealTime (m_real_time);
   m_cpService.setTraCIclient (m_client);
 
-  /* IF CPMv1 facility is needed
-    m_cpService_v1.setBTP (m_btp);
-    m_cpService_v1.setLDM(m_LDM);
-    m_cpService_v1.setSocketTx (m_socket);
-    m_cpService_v1.setSocketRx (m_socket);
-    m_cpService_v1.setVDP(traci_vdp);
-    m_cpService_v1.setTraCIclient(m_client);
-    m_cpService_v1.setRealTime(m_real_time);
-    m_cpService_v1.setStationProperties(std::stol(m_id.substr (3)), (long)stationtype);
-    m_cpService_v1.addCPRxCallback(std::bind(&emergencyVehicleAlert::receiveCPMV1,this,std::placeholders::_1,std::placeholders::_2));
-    m_cpService_v1.startCpmDissemination ();
-    */
-
   /* Set TraCI VDP for GeoNet object */
   m_caService.setVDP (traci_vdp);
   m_denService.setVDP (traci_vdp);
@@ -285,12 +299,6 @@ emergencyVehicleAlert::StartApplication (void)
   /* Schedule CAM dissemination */
   if (m_send_cam == true)
     {
-      // Old desync code kept just for reference
-      // It may lead to nodes not being desynchronized properly in specific situations in which
-      // Simulator::Now().GetNanoSeconds () returns the same seed for multiple nodes
-      // std::srand(Simulator::Now().GetNanoSeconds ());
-      // double desync = ((double)std::rand()/RAND_MAX);
-
       Ptr<UniformRandomVariable> desync_rvar = CreateObject<UniformRandomVariable> ();
       desync_rvar->SetAttribute ("Min", DoubleValue (0.0));
       desync_rvar->SetAttribute ("Max", DoubleValue (1.0));
@@ -311,6 +319,11 @@ emergencyVehicleAlert::StartApplication (void)
       m_csv_ofstream_cam
           << "messageId,camId,timestamp,latitude,longitude,heading,speed,acceleration" << std::endl;
     }
+
+  /* Initialize previous speed and schedule periodic event detection */
+  m_prev_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+  m_event_check_ev = Simulator::Schedule (Seconds (m_event_check_interval),
+                                           &emergencyVehicleAlert::CheckForEvents, this);
 }
 
 void
@@ -320,6 +333,7 @@ emergencyVehicleAlert::StopApplication ()
   Simulator::Cancel (m_speed_ev);
   Simulator::Cancel (m_send_cam_ev);
   Simulator::Cancel (m_update_denm_ev);
+  Simulator::Cancel (m_event_check_ev);
 
   uint64_t cam_sent, cpm_sent;
 
@@ -352,38 +366,172 @@ emergencyVehicleAlert::StopApplicationNow ()
 }
 
 void
+emergencyVehicleAlert::CheckForEvents ()
+{
+  double current_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+  double acceleration = (current_speed - m_prev_speed) / m_event_check_interval;
+  m_prev_speed = current_speed;
+
+  if (!m_is_event_active)
+    {
+      if (DetectHardBraking ())
+        {
+          // causeCode=99 (dangerousSituation), subCauseCode=1 (emergencyElectronicBrakeEngaged)
+          TriggerDenm (99, 1);
+          m_is_event_active = true;
+
+          NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                           << " detected HARD BRAKING (accel=" << acceleration << " m/s^2)");
+        }
+      else if (DetectCollisionRisk ())
+        {
+          // causeCode=97 (collisionRisk), subCauseCode=0 (unavailable)
+          TriggerDenm (97, 0);
+          m_is_event_active = true;
+
+          NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                           << " detected COLLISION RISK");
+        }
+    }
+  else
+    {
+      // Check if event has ended: no longer braking hard and no collision risk
+      double accel = m_client->TraCIAPI::vehicle.getAcceleration (m_id);
+      if (accel > m_hard_brake_threshold && !DetectCollisionRisk ())
+        {
+          TerminateDenm ();
+          m_is_event_active = false;
+
+          NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                           << " event ended, DENM terminated");
+        }
+    }
+
+  // Clean up expired forwarding entries
+  CleanupForwardingTable ();
+
+  // Reschedule
+  m_event_check_ev = Simulator::Schedule (Seconds (m_event_check_interval),
+                                           &emergencyVehicleAlert::CheckForEvents, this);
+}
+
+bool
+emergencyVehicleAlert::DetectHardBraking ()
+{
+  double accel = m_client->TraCIAPI::vehicle.getAcceleration (m_id);
+  return accel < m_hard_brake_threshold;
+}
+
+bool
+emergencyVehicleAlert::DetectCollisionRisk ()
+{
+  // Use TraCI getLeader to get leading vehicle info
+  auto leader = m_client->TraCIAPI::vehicle.getLeader (m_id, 100.0);
+  if (leader.first.empty ())
+    return false;
+
+  double gap = leader.second; // gap in meters
+  if (gap < 0)
+    return false;
+
+  double my_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+
+  // Get leader speed from neighbor table or TraCI
+  double leader_speed = 0.0;
+  // Try to get leader's station ID from neighbor table
+  for (const auto &neighbor : m_neighborTable)
+    {
+      // Simple heuristic: match by proximity if we can
+      // The leader ID from TraCI is a SUMO ID, not a stationId
+      // So we just use the gap and closing speed
+    }
+
+  // Use TraCI to get leader speed directly
+  try
+    {
+      leader_speed = m_client->TraCIAPI::vehicle.getSpeed (leader.first);
+    }
+  catch (...)
+    {
+      return false;
+    }
+
+  double closing_speed = my_speed - leader_speed;
+
+  // Collision risk: gap is small AND closing speed is positive (approaching)
+  if (gap < m_collision_risk_distance && closing_speed > 1.0)
+    {
+      // Time to collision estimate
+      double ttc = gap / closing_speed;
+      if (ttc < 3.0) // Less than 3 seconds to collision
+        return true;
+    }
+
+  return false;
+}
+
+void
+emergencyVehicleAlert::CleanupForwardingTable ()
+{
+  uint64_t now_us = Simulator::Now ().GetMicroSeconds ();
+  auto it = m_forwardingTable.begin ();
+  while (it != m_forwardingTable.end ())
+    {
+      // Remove entries older than 30 seconds (default validity)
+      if (now_us - it->second.receiveTime_us > 30000000)
+        {
+          it = m_forwardingTable.erase (it);
+        }
+      else
+        {
+          ++it;
+        }
+    }
+}
+
+void
 emergencyVehicleAlert::receiveCAM (asn1cpp::Seq<CAM> cam, Address from)
 {
-  /* Implement CAM strategy here */
   m_cam_received++;
 
+  // Extract sender info for neighbor table
+  unsigned long sender_id = (unsigned long) asn1cpp::getField (cam->header.stationId, long);
+  NeighborState neighbor;
+  neighbor.stationId = sender_id;
+  neighbor.latitude =
+      asn1cpp::getField (cam->cam.camParameters.basicContainer.referencePosition.latitude, double) /
+      DOT_ONE_MICRO;
+  neighbor.longitude =
+      asn1cpp::getField (cam->cam.camParameters.basicContainer.referencePosition.longitude,
+                         double) /
+      DOT_ONE_MICRO;
+  neighbor.speed =
+      asn1cpp::getField (cam->cam.camParameters.highFrequencyContainer.choice
+                             .basicVehicleContainerHighFrequency.speed.speedValue,
+                         double) /
+      CENTI;
+  neighbor.heading =
+      asn1cpp::getField (cam->cam.camParameters.highFrequencyContainer.choice
+                             .basicVehicleContainerHighFrequency.heading.headingValue,
+                         double) /
+      DECI;
+  neighbor.stationType =
+      asn1cpp::getField (cam->cam.camParameters.basicContainer.stationType, long);
+  neighbor.lastUpdate = Simulator::Now ().GetMicroSeconds ();
+
+  m_neighborTable[sender_id] = neighbor;
+
   /* If the CAM is received from an emergency vehicle, and the host vehicle is a "passenger" car, then process the CAM */
-  if (asn1cpp::getField (cam->cam.camParameters.basicContainer.stationType, StationType_t) ==
-          StationType_specialVehicle &&
-      m_type != "emergency")
+  if (neighbor.stationType == StationType_specialVehicle && m_type != "emergency")
     {
       libsumo::TraCIPosition pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
       pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (pos.x, pos.y);
 
-      /* If the distance between the "passenger" car and the emergency vehicle and the difference in the heading angles
-      * are below certain thresholds, then actuate the slow-down strategy */
-      if (appUtil_haversineDist (
-              pos.y, pos.x,
-              asn1cpp::getField (cam->cam.camParameters.basicContainer.referencePosition.latitude,
-                                 double) /
-                  DOT_ONE_MICRO,
-              asn1cpp::getField (cam->cam.camParameters.basicContainer.referencePosition.longitude,
-                                 double) /
-                  DOT_ONE_MICRO) < m_distance_threshold &&
-          appUtil_angDiff (m_client->TraCIAPI::vehicle.getAngle (m_id),
-                           (double) asn1cpp::getField (
-                               cam->cam.camParameters.highFrequencyContainer.choice
-                                   .basicVehicleContainerHighFrequency.heading.headingValue,
-                               HeadingValue_t) /
-                               DECI) < m_heading_threshold)
+      if (appUtil_haversineDist (pos.y, pos.x, neighbor.latitude, neighbor.longitude) <
+              m_distance_threshold &&
+          appUtil_angDiff (m_client->TraCIAPI::vehicle.getAngle (m_id), neighbor.heading) <
+              m_heading_threshold)
         {
-          /* Slowdown only if you are not in the takeover lane,
-        * otherwise the emergency vechicle may get stuck behind */
           if (m_client->TraCIAPI::vehicle.getLaneIndex (m_id) == 0)
             {
               m_client->TraCIAPI::vehicle.changeLane (m_id, 0, 3);
@@ -580,61 +728,24 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
 {
   m_denm_received++;
 
-  // Extract basic header information
-  long message_id = denm.getDenmHeaderMessageID ();
-  long protocol_version = denm.getDenmHeaderProtocolVersion ();
-
   // Extract action ID for sender identification
   ActionID_t action_id = denm.getDenmActionID ();
   unsigned long sender_station_id = action_id.originatingStationId;
   long sequence_number = action_id.sequenceNumber;
 
+  // Don't process our own DENMs
+  unsigned long my_station_id = std::stol (m_id.substr (3));
+  if (sender_station_id == my_station_id)
+    return;
+
   // Extract position information (converted from 0.1 micro-degrees to degrees)
-  const long kDotOneMicro = 10000000;
   long latitude_raw = denm.getDenmMgmtLatitude ();
   long longitude_raw = denm.getDenmMgmtLongitude ();
-  double latitude_degrees = static_cast<double> (latitude_raw) / kDotOneMicro;
-  double longitude_degrees = static_cast<double> (longitude_raw) / kDotOneMicro;
+  double latitude_degrees = static_cast<double> (latitude_raw) / DOT_ONE_MICRO;
+  double longitude_degrees = static_cast<double> (longitude_raw) / DOT_ONE_MICRO;
 
   // Extract timing information
   long detection_time = denm.getDenmMgmtDetectionTime ();
-  long validity_duration = denm.getDenmMgmtValidityDuration ();
-
-  // Extract speed and heading from location container if available
-  double event_speed = 0.0;
-  double event_heading = 0.0;
-
-  if (denm.isDenmLocationDataSet ())
-    {
-      DENDataItem<denData::denDataLocation> location_data = denm.getDenmLocationData_asn_types ();
-      denData::denDataLocation location = location_data.getData ();
-
-      if (location.eventSpeed.isAvailable ())
-        {
-          DENValueConfidence<long, long> speed_data = location.eventSpeed.getData ();
-          event_speed = static_cast<double> (speed_data.getValue ()) / 100.0; // Convert cm/s to m/s
-        }
-
-      if (location.eventPositionHeading.isAvailable ())
-        {
-          DENValueConfidence<long, long> heading_data = location.eventPositionHeading.getData ();
-          event_heading =
-              static_cast<double> (heading_data.getValue ()) / 10.0; // Convert 0.1° to degrees
-        }
-    }
-
-  // Extract vehicle mass from alacarte container if available
-  double vehicle_mass = 1500.0; // Default mass in kg
-  if (denm.isDenmAlacarteDataSet ())
-    {
-      DENDataItem<denData::denDataAlacarte> alacarte_data = denm.getDenmAlacarteData_asn_types ();
-      denData::denDataAlacarte alacarte = alacarte_data.getData ();
-
-      if (alacarte.vehicleMass.isAvailable ())
-        {
-          vehicle_mass = static_cast<double> (alacarte.vehicleMass.getData ());
-        }
-    }
 
   // Extract cause code from situation container if available
   long cause_code = -1;
@@ -648,99 +759,284 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
       sub_cause_code = situation.subCauseCode;
     }
 
-  // Get repetition parameters
-  uint32_t repetition_duration = denm.getDenmRepetitionDuration ();
-  uint32_t repetition_interval = denm.getDenmRepetitionInterval ();
-
-  bool data_is_valid = denm.isDenDataRight ();
-
   NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                   << " received DENM from vehicle " << sender_station_id
-                   << " (MsgID: " << message_id << ", Seq: " << sequence_number << ")");
+                   << " received DENM from station " << sender_station_id
+                   << " (Seq: " << sequence_number << ", Cause: " << cause_code << ")");
 
-  NS_LOG_INFO ("  Position: " << latitude_degrees << "°, " << longitude_degrees << "°");
-  NS_LOG_INFO ("  Speed: " << event_speed << " m/s, Heading: " << event_heading << "°");
-  NS_LOG_INFO ("  Vehicle mass: " << vehicle_mass << " kg, Cause code: " << cause_code);
-  NS_LOG_INFO ("  Data integrity: " << (data_is_valid ? "OK" : "INVALID"));
+  // Extract speed from location container
+  double event_speed = 0.0;
+  if (denm.isDenmLocationDataSet ())
+    {
+      DENDataItem<denData::denDataLocation> location_data = denm.getDenmLocationData_asn_types ();
+      denData::denDataLocation location = location_data.getData ();
+      if (location.eventSpeed.isAvailable ())
+        {
+          event_speed = static_cast<double> (location.eventSpeed.getData ().getValue ()) / CENTI;
+        }
+    }
+
+  // Extract custom ethical V2X fields from alacarte container
+  double max_deceleration = 0.0;
+  long braking_start_time = 0;
+  if (denm.isDenmAlacarteDataSet ())
+    {
+      DENDataItem<denData::denDataAlacarte> alacarte_data = denm.getDenmAlacarteData_asn_types ();
+      denData::denDataAlacarte alacarte = alacarte_data.getData ();
+      if (alacarte.maxDeceleration.isAvailable ())
+        max_deceleration = alacarte.maxDeceleration.getData ();
+      if (alacarte.brakingStartTime.isAvailable ())
+        braking_start_time = alacarte.brakingStartTime.getData ();
+    }
+
+  // --- DENM Forwarding Logic ---
+  std::pair<unsigned long, long> fw_key =
+      std::make_pair (sender_station_id, sequence_number);
+
+  auto fw_it = m_forwardingTable.find (fw_key);
+  if (fw_it != m_forwardingTable.end ())
+    {
+      // Already have this DENM — check if detection time is newer
+      if (detection_time <= fw_it->second.detectionTime)
+        return; // Duplicate or older, discard
+      // Update with newer data
+      fw_it->second.denmData = denm;
+      fw_it->second.detectionTime = detection_time;
+      fw_it->second.eventLat = latitude_degrees;
+      fw_it->second.eventLon = longitude_degrees;
+      fw_it->second.receiveTime_us = Simulator::Now ().GetMicroSeconds ();
+    }
+  else
+    {
+      // New DENM — add to forwarding table
+      ForwardingEntry entry;
+      entry.denmData = denm;
+      entry.actionId.originatingStationID = sender_station_id;
+      entry.actionId.sequenceNumber = sequence_number;
+      entry.detectionTime = detection_time;
+      entry.eventLat = latitude_degrees;
+      entry.eventLon = longitude_degrees;
+      entry.receiveTime_us = Simulator::Now ().GetMicroSeconds ();
+      entry.forwardCount = 0;
+      m_forwardingTable[fw_key] = entry;
+      fw_it = m_forwardingTable.find (fw_key);
+    }
+
+  // Check if we are within relevance area and should forward
+  libsumo::TraCIPosition my_pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
+  my_pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (my_pos.x, my_pos.y);
+
+  double dist_to_event =
+      appUtil_haversineDist (my_pos.y, my_pos.x, latitude_degrees, longitude_degrees);
+
+  // Forward if within 500m relevance area and forward count not exceeded
+  if (dist_to_event < 500.0 && fw_it->second.forwardCount < MAX_FORWARD_COUNT)
+    {
+      // Check minimum forwarding interval
+      uint64_t now_us = Simulator::Now ().GetMicroSeconds ();
+      if (fw_it->second.forwardCount == 0 ||
+          (now_us - fw_it->second.receiveTime_us) >= MIN_FORWARD_INTERVAL_US)
+        {
+          DEN_ActionID_t fwd_action_id;
+          fwd_action_id.originatingStationID = sender_station_id;
+          fwd_action_id.sequenceNumber = sequence_number;
+
+          DENBasicService_error_t fwd_retval =
+              m_denService.forwardDENM (denm, fwd_action_id);
+
+          if (fwd_retval == DENM_NO_ERROR)
+            {
+              fw_it->second.forwardCount++;
+              NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                               << " forwarded DENM from station " << sender_station_id
+                               << " (forward #" << fw_it->second.forwardCount << ")");
+            }
+        }
+    }
 }
 
 void
-emergencyVehicleAlert::TriggerDenm ()
+emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
 {
-  m_denm_sent++;
   denData data;
   DEN_ActionID_t actionid;
   DENBasicService_error_t trigger_retval;
 
-  /* Set DENM mandatpry fields */
-  data.setDenmMandatoryFields (compute_timestampIts (true), Latitude_unavailable,
-                               Longitude_unavailable);
-
-  /* Compute GeoArea for denms */
-  GeoArea_t geoArea;
-  // Longitude and Latitude in [0.1 microdegree]
+  // Get real coordinates from SUMO
   libsumo::TraCIPosition pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
   pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (pos.x, pos.y);
-  geoArea.posLong = pos.x * DOT_ONE_MICRO;
-  geoArea.posLat = pos.y * DOT_ONE_MICRO;
-  // Radius [m] of the circle around the vehicle, where the DENM will be received
-  geoArea.distA = 50;
-  // DistB [m] and angle [deg] equal to zero because we are defining a circular area as specified in ETSI EN 302 636-4-1 [9.8.5.2]
+
+  // Set management container mandatory fields with real coordinates (0.1 microdegrees)
+  data.setDenmMandatoryFields (compute_timestampIts (m_real_time),
+                               (long) (pos.y * DOT_ONE_MICRO),
+                               (long) (pos.x * DOT_ONE_MICRO));
+
+  // Set validity duration (30 seconds for safety events)
+  data.setValidityDuration (30);
+
+  // Set repetition parameters (500ms interval, 30s duration)
+  data.setDenmRepetition (30000, 500);
+
+  // Set situation container
+  denData::denDataSituation situation;
+  situation.informationQuality = 1; // Based on vehicle sensor data
+  situation.causeCode = causeCode;
+  situation.subCauseCode = subCauseCode;
+  data.setDenmSituationData_asn_types (situation);
+
+  // Set location container — speed in cm/s, heading in 0.1 degrees
+  double speed_ms = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+  long speed_cm_s = (long) (speed_ms * CENTI);
+  data.setDenmLocationEventSpeed (speed_cm_s, SpeedConfidence_equalOrWithinOneCentimeterPerSec);
+
+  // Set alacarte container
+  data.setDenmAlacarteVehicleMass ((long) m_vehicle_mass);
+  data.setDenmAlacarteLanePosition ((long) m_client->TraCIAPI::vehicle.getLanePosition (m_id));
+
+  // Set ethical V2X custom fields if enabled
+  if (m_ethical_braking_enabled)
+    {
+      double max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
+      data.setDenmAlacarteMaxDeceleration (max_decel);
+      data.setDenmAlacarteBrakingStartTime (compute_timestampIts (m_real_time));
+    }
+
+  // Set GeoArea — circular area around the event
+  GeoArea_t geoArea;
+  geoArea.posLong = (long) (pos.x * DOT_ONE_MICRO);
+  geoArea.posLat = (long) (pos.y * DOT_ONE_MICRO);
+  // Hard braking: 200m radius, collision risk: 300m radius
+  geoArea.distA = (causeCode == 99) ? 200 : 300;
   geoArea.distB = 0;
   geoArea.angle = 0;
   geoArea.shape = CIRCULAR;
   m_denService.setGeoArea (geoArea);
-  data.setDenmAlacarteVehicleMass (1500.0);
-  data.setDenmLocationEventSpeed (m_client->TraCIAPI::vehicle.getSpeed (m_id));
-  data.setDenmAlacarteLanePosition (m_client->TraCIAPI::vehicle.getLanePosition (m_id));
+
   trigger_retval = m_denService.appDENM_trigger (data, actionid);
 
   if (trigger_retval != DENM_NO_ERROR)
     {
       NS_LOG_ERROR ("Cannot trigger DENM. Error code: " << trigger_retval);
     }
+  else
+    {
+      m_denm_sent++;
+      m_active_action_id = actionid;
 
-  m_update_denm_ev =
-      Simulator::Schedule (Seconds (1), &emergencyVehicleAlert::UpdateDenm, this, actionid);
+      // Change vehicle color to red to indicate event
+      libsumo::TraCIColor red;
+      red.r = 255;
+      red.g = 0;
+      red.b = 0;
+      red.a = 255;
+      m_client->TraCIAPI::vehicle.setColor (m_id, red);
+
+      // Schedule periodic updates
+      m_update_denm_ev =
+          Simulator::Schedule (MilliSeconds (500), &emergencyVehicleAlert::UpdateDenm, this,
+                               actionid);
+    }
 }
 
 void
 emergencyVehicleAlert::UpdateDenm (DEN_ActionID actionid)
 {
-  m_denm_sent++;
   denData data;
   DENBasicService_error_t trigger_retval;
 
-  /* Set DENM mandatpry fields */
-  data.setDenmMandatoryFields (compute_timestampIts (true), Latitude_unavailable,
-                               Longitude_unavailable);
-
-  /* Compute GeoArea for denms */
-  GeoArea_t geoArea;
-  // Longitude and Latitude in [0.1 microdegree]
+  // Get updated coordinates from SUMO
   libsumo::TraCIPosition pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
   pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (pos.x, pos.y);
-  geoArea.posLong = pos.x * DOT_ONE_MICRO;
-  geoArea.posLat = pos.y * DOT_ONE_MICRO;
-  // Radius [m] of the circle around the vehicle, where the DENM will be received
-  geoArea.distA = 50;
-  // DistB [m] and angle [deg] equal to zero because we are defining a circular area as specified in ETSI EN 302 636-4-1 [9.8.5.2]
+
+  // Set management container mandatory fields with updated position
+  data.setDenmMandatoryFields (actionid.originatingStationID, actionid.sequenceNumber,
+                               compute_timestampIts (m_real_time),
+                               (double) (pos.y * DOT_ONE_MICRO),
+                               (double) (pos.x * DOT_ONE_MICRO));
+
+  data.setValidityDuration (30);
+  data.setDenmRepetition (30000, 500);
+
+  // Update speed
+  double speed_ms = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+  long speed_cm_s = (long) (speed_ms * CENTI);
+  data.setDenmLocationEventSpeed (speed_cm_s, SpeedConfidence_equalOrWithinOneCentimeterPerSec);
+
+  // Update alacarte
+  data.setDenmAlacarteVehicleMass ((long) m_vehicle_mass);
+  data.setDenmAlacarteLanePosition ((long) m_client->TraCIAPI::vehicle.getLanePosition (m_id));
+
+  if (m_ethical_braking_enabled)
+    {
+      double max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
+      data.setDenmAlacarteMaxDeceleration (max_decel);
+    }
+
+  // Update GeoArea
+  GeoArea_t geoArea;
+  geoArea.posLong = (long) (pos.x * DOT_ONE_MICRO);
+  geoArea.posLat = (long) (pos.y * DOT_ONE_MICRO);
+  geoArea.distA = 200;
   geoArea.distB = 0;
   geoArea.angle = 0;
   geoArea.shape = CIRCULAR;
   m_denService.setGeoArea (geoArea);
-  data.setDenmAlacarteVehicleMass (1500.0);
-  data.setDenmLocationEventSpeed (m_client->TraCIAPI::vehicle.getSpeed (m_id));
-  data.setDenmAlacarteLanePosition (m_client->TraCIAPI::vehicle.getLanePosition (m_id));
-  trigger_retval = m_denService.appDENM_trigger (data, actionid);
+
+  trigger_retval = m_denService.appDENM_update (data, actionid);
 
   if (trigger_retval != DENM_NO_ERROR)
     {
-      NS_LOG_ERROR ("Cannot trigger DENM. Error code: " << trigger_retval);
+      NS_LOG_ERROR ("Cannot update DENM. Error code: " << trigger_retval);
+    }
+  else
+    {
+      m_denm_sent++;
     }
 
-  m_update_denm_ev =
-      Simulator::Schedule (Seconds (1), &emergencyVehicleAlert::UpdateDenm, this, actionid);
+  // Continue updating if event is still active
+  if (m_is_event_active)
+    {
+      m_update_denm_ev =
+          Simulator::Schedule (MilliSeconds (500), &emergencyVehicleAlert::UpdateDenm, this,
+                               actionid);
+    }
+}
+
+void
+emergencyVehicleAlert::TerminateDenm ()
+{
+  if (!m_is_event_active)
+    return;
+
+  Simulator::Cancel (m_update_denm_ev);
+
+  denData data;
+  // Set mandatory fields for termination
+  libsumo::TraCIPosition pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
+  pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (pos.x, pos.y);
+
+  data.setDenmMandatoryFields (m_active_action_id.originatingStationID,
+                               m_active_action_id.sequenceNumber,
+                               compute_timestampIts (m_real_time),
+                               (double) (pos.y * DOT_ONE_MICRO),
+                               (double) (pos.x * DOT_ONE_MICRO));
+
+  data.setValidityDuration (30);
+
+  DENBasicService_error_t term_retval =
+      m_denService.appDENM_termination (data, m_active_action_id);
+
+  if (term_retval != DENM_NO_ERROR)
+    {
+      NS_LOG_ERROR ("Cannot terminate DENM. Error code: " << term_retval);
+    }
+
+  // Restore vehicle color
+  libsumo::TraCIColor connected;
+  connected.r = 0;
+  connected.g = 225;
+  connected.b = 255;
+  connected.a = 255;
+  m_client->TraCIAPI::vehicle.setColor (m_id, connected);
 }
 
 void

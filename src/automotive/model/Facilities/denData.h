@@ -90,6 +90,8 @@ public:
     DENDataItem<long> positioningSolution;
     DENDataItem<DEN_StationaryVehicleContainer_t> stationaryVehicle;
     DENDataItem<long> vehicleMass; // ANNEX B.57 vehicleMass ETSI EN 302 637-3 V1.2.1
+    DENDataItem<double> maxDeceleration; // Custom: maximum deceleration capability (m/s²) for ethical V2X
+    DENDataItem<long> brakingStartTime; // Custom: timestamp when braking started (ms since ITS epoch)
   } denDataAlacarte;
 
 public:
@@ -140,6 +142,8 @@ public:
 
   /* Optional information setters */
   void setDenmAlacarteVehicleMass (long vehicle_mass);
+  void setDenmAlacarteMaxDeceleration (double max_deceleration);
+  void setDenmAlacarteBrakingStartTime (long braking_start_time);
   void setDenmLocationEventSpeed (long vehicle_speed, long confidence = 0.95);
   void setDenmAlacarteLanePosition (long lane_position);
 

@@ -114,6 +114,17 @@ namespace ns3 {
     DENBasicService_error_t appDENM_termination(denData data, const DEN_ActionID_t actionid);
 
     /**
+     * @brief Forward a received DENM message
+     *
+     * This function forwards a received DENM without creating a new ActionID
+     * or originating table entry. It preserves the original ActionID.
+     *
+     * @param data The DENM data to forward.
+     * @param actionid The original action ID of the DENM.
+     */
+    DENBasicService_error_t forwardDENM(denData data, const DEN_ActionID_t actionid);
+
+    /**
      * @brief reception of a DENM message
      *
      * This function is called when a DENM message is received by  the BTP layer.

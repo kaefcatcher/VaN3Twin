@@ -879,6 +879,64 @@ namespace ns3 {
     return DENM_NO_ERROR;
   }
 
+  DENBasicService_error_t
+  DENBasicService::forwardDENM(denData data, const DEN_ActionID_t actionid)
+  {
+    DENBasicService_error_t fillDENM_rval=DENM_NO_ERROR;
+
+    if(!CheckMainAttributes ())
+      {
+        return DENM_ATTRIBUTES_UNSET;
+      }
+
+    if(!data.isDenDataRight())
+        return DENM_WRONG_DE_DATA;
+
+    auto denm = asn1cpp::makeSeq(DENM);
+    if(bool(denm)==false)
+      {
+        return DENM_ALLOC_ERROR;
+      }
+
+    /* Fill DENM with data, preserving the original actionID */
+    fillDENM_rval=fillDENM(denm,data,actionid,compute_timestampIts (m_real_time));
+
+    if(fillDENM_rval!=DENM_NO_ERROR)
+      {
+        return fillDENM_rval;
+      }
+
+    /* Encode and send via BTP/GBC */
+    std::string encode_result = asn1cpp::uper::encode(denm);
+
+    if(encode_result.size()<1)
+    {
+      return DENM_ASN1_UPER_ENC_ERROR;
+    }
+
+    Ptr<Packet> packet = Create<Packet> ((uint8_t*) encode_result.c_str(), encode_result.size());
+
+    BTPDataRequest_t dataRequest = {};
+    dataRequest.BTPType = BTP_B;
+    dataRequest.destPort = 2002;
+    dataRequest.destPInfo = 0;
+    dataRequest.GNType = GBC;
+    dataRequest.GnAddress = m_geoArea;
+    dataRequest.GNCommProfile = UNSPECIFIED;
+    dataRequest.GNRepInt = 0;
+    dataRequest.GNMaxRepInt = 0;
+    dataRequest.GNMaxLife = 60;
+    dataRequest.GNMaxHL = 1;
+    dataRequest.GNTraClass = 0x01;
+    dataRequest.lenght = packet->GetSize ();
+    dataRequest.data = packet;
+
+    m_btp->sendBTP(dataRequest, 0, MessageId_denm);
+
+    /* No originating table entry or timers — this is a pure forward */
+    return DENM_NO_ERROR;
+  }
+
   void
   DENBasicService::receiveDENM(BTPDataIndication_t dataIndication,Address from)
   {

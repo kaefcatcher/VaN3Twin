@@ -202,6 +202,40 @@ denData::setDenmAlacarteVehicleMass (long vehicle_mass)
 }
 
 void
+denData::setDenmAlacarteMaxDeceleration (double max_deceleration)
+{
+  if (m_alacarte.isAvailable ())
+    {
+      denDataAlacarte alacarte = m_alacarte.getData ();
+      alacarte.maxDeceleration = DENDataItem<double> (max_deceleration);
+      m_alacarte.setData (alacarte);
+    }
+  else
+    {
+      denDataAlacarte alacarte;
+      alacarte.maxDeceleration = DENDataItem<double> (max_deceleration);
+      m_alacarte.setData (alacarte);
+    }
+}
+
+void
+denData::setDenmAlacarteBrakingStartTime (long braking_start_time)
+{
+  if (m_alacarte.isAvailable ())
+    {
+      denDataAlacarte alacarte = m_alacarte.getData ();
+      alacarte.brakingStartTime = DENDataItem<long> (braking_start_time);
+      m_alacarte.setData (alacarte);
+    }
+  else
+    {
+      denDataAlacarte alacarte;
+      alacarte.brakingStartTime = DENDataItem<long> (braking_start_time);
+      m_alacarte.setData (alacarte);
+    }
+}
+
+void
 denData::setDenmLocationEventSpeed (long vehicle_speed, long confidence)
 {
   if (m_location.isAvailable ())

@@ -93,7 +93,7 @@ asn_TYPE_member_t asn_MBR_AlacarteContainer_1[] = {
 		0, 0, /* No default value */
 		"positioningSolution"
 		},
-	{ ATF_POINTER, 1, offsetof(struct AlacarteContainer, stationaryVehicle),
+	{ ATF_POINTER, 4, offsetof(struct AlacarteContainer, stationaryVehicle),
 		(ASN_TAG_CLASS_CONTEXT | (5 << 2)),
 		-1,	/* IMPLICIT tag at current level */
 		&asn_DEF_StationaryVehicleContainer,
@@ -110,8 +110,59 @@ asn_TYPE_member_t asn_MBR_AlacarteContainer_1[] = {
 		0, 0, /* No default value */
 		"stationaryVehicle"
 		},
+	{ ATF_POINTER, 3, offsetof(struct AlacarteContainer, ethicalMaxDeceleration),
+		(ASN_TAG_CLASS_CONTEXT | (6 << 2)),
+		-1,	/* IMPLICIT tag at current level */
+		&asn_DEF_NativeInteger,
+		0,
+		{
+#if !defined(ASN_DISABLE_OER_SUPPORT)
+			0,
+#endif  /* !defined(ASN_DISABLE_OER_SUPPORT) */
+#if !defined(ASN_DISABLE_UPER_SUPPORT) || !defined(ASN_DISABLE_APER_SUPPORT)
+			0,
+#endif  /* !defined(ASN_DISABLE_UPER_SUPPORT) || !defined(ASN_DISABLE_APER_SUPPORT) */
+			0
+		},
+		0, 0, /* No default value */
+		"ethicalMaxDeceleration"
+		},
+	{ ATF_POINTER, 2, offsetof(struct AlacarteContainer, ethicalBrakingStartTime),
+		(ASN_TAG_CLASS_CONTEXT | (7 << 2)),
+		-1,	/* IMPLICIT tag at current level */
+		&asn_DEF_NativeInteger,
+		0,
+		{
+#if !defined(ASN_DISABLE_OER_SUPPORT)
+			0,
+#endif  /* !defined(ASN_DISABLE_OER_SUPPORT) */
+#if !defined(ASN_DISABLE_UPER_SUPPORT) || !defined(ASN_DISABLE_APER_SUPPORT)
+			0,
+#endif  /* !defined(ASN_DISABLE_UPER_SUPPORT) || !defined(ASN_DISABLE_APER_SUPPORT) */
+			0
+		},
+		0, 0, /* No default value */
+		"ethicalBrakingStartTime"
+		},
+	{ ATF_POINTER, 1, offsetof(struct AlacarteContainer, ethicalVehicleMass),
+		(ASN_TAG_CLASS_CONTEXT | (8 << 2)),
+		-1,	/* IMPLICIT tag at current level */
+		&asn_DEF_NativeInteger,
+		0,
+		{
+#if !defined(ASN_DISABLE_OER_SUPPORT)
+			0,
+#endif  /* !defined(ASN_DISABLE_OER_SUPPORT) */
+#if !defined(ASN_DISABLE_UPER_SUPPORT) || !defined(ASN_DISABLE_APER_SUPPORT)
+			0,
+#endif  /* !defined(ASN_DISABLE_UPER_SUPPORT) || !defined(ASN_DISABLE_APER_SUPPORT) */
+			0
+		},
+		0, 0, /* No default value */
+		"ethicalVehicleMass"
+		},
 };
-static const int asn_MAP_AlacarteContainer_oms_1[] = { 0, 1, 2, 3, 4, 5 };
+static const int asn_MAP_AlacarteContainer_oms_1[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
 static const ber_tlv_tag_t asn_DEF_AlacarteContainer_tags_1[] = {
 	(ASN_TAG_CLASS_UNIVERSAL | (16 << 2))
 };
@@ -121,15 +172,18 @@ static const asn_TYPE_tag2member_t asn_MAP_AlacarteContainer_tag2el_1[] = {
     { (ASN_TAG_CLASS_CONTEXT | (2 << 2)), 2, 0, 0 }, /* externalTemperature */
     { (ASN_TAG_CLASS_CONTEXT | (3 << 2)), 3, 0, 0 }, /* roadWorks */
     { (ASN_TAG_CLASS_CONTEXT | (4 << 2)), 4, 0, 0 }, /* positioningSolution */
-    { (ASN_TAG_CLASS_CONTEXT | (5 << 2)), 5, 0, 0 } /* stationaryVehicle */
+    { (ASN_TAG_CLASS_CONTEXT | (5 << 2)), 5, 0, 0 }, /* stationaryVehicle */
+    { (ASN_TAG_CLASS_CONTEXT | (6 << 2)), 6, 0, 0 }, /* ethicalMaxDeceleration */
+    { (ASN_TAG_CLASS_CONTEXT | (7 << 2)), 7, 0, 0 }, /* ethicalBrakingStartTime */
+    { (ASN_TAG_CLASS_CONTEXT | (8 << 2)), 8, 0, 0 } /* ethicalVehicleMass */
 };
 asn_SEQUENCE_specifics_t asn_SPC_AlacarteContainer_specs_1 = {
 	sizeof(struct AlacarteContainer),
 	offsetof(struct AlacarteContainer, _asn_ctx),
 	asn_MAP_AlacarteContainer_tag2el_1,
-	6,	/* Count of tags in the map */
+	9,	/* Count of tags in the map */
 	asn_MAP_AlacarteContainer_oms_1,	/* Optional members */
-	6, 0,	/* Root/Additions */
+	6, 3,	/* Root/Additions */
 	6,	/* First extension addition */
 };
 asn_TYPE_descriptor_t asn_DEF_AlacarteContainer = {
@@ -152,7 +206,7 @@ asn_TYPE_descriptor_t asn_DEF_AlacarteContainer = {
 		SEQUENCE_constraint
 	},
 	asn_MBR_AlacarteContainer_1,
-	6,	/* Elements count */
+	9,	/* Elements count */
 	&asn_SPC_AlacarteContainer_specs_1	/* Additional specs */
 };
 

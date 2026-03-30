@@ -416,6 +416,19 @@ namespace ns3 {
             asn1cpp::setField(alacarte_seq->stationaryVehicle,stationary_veh_seq);
           }
 
+        /* Ethical V2X extension fields */
+        if(alacarte_data.getData ().maxDeceleration.isAvailable ())
+          {
+            long maxDecelVal = (long)(alacarte_data.getData ().maxDeceleration.getData () * 10);
+            asn1cpp::setField(alacarte_seq->ethicalMaxDeceleration, maxDecelVal);
+          }
+
+        if(alacarte_data.getData ().brakingStartTime.isAvailable ())
+          asn1cpp::setField(alacarte_seq->ethicalBrakingStartTime, alacarte_data.getData ().brakingStartTime.getData ());
+
+        if(alacarte_data.getData ().vehicleMass.isAvailable ())
+          asn1cpp::setField(alacarte_seq->ethicalVehicleMass, alacarte_data.getData ().vehicleMass.getData ());
+
         //Add the Alacarte container to the DENM
         asn1cpp::setField(denm->denm.alacarte,alacarte_seq);
 
@@ -1598,6 +1611,18 @@ namespace ns3 {
         alacarte.stationaryVehicle.setData (stationaryVeh_data);
       }
 
+    /* Ethical V2X extension fields */
+    auto ethMaxDecel = asn1cpp::getField(denm_alacarte_container->ethicalMaxDeceleration, long, &ok);
+    if(ok)
+      alacarte.maxDeceleration.setData (static_cast<double>(ethMaxDecel) / 10.0);
+
+    auto ethBrakeTime = asn1cpp::getField(denm_alacarte_container->ethicalBrakingStartTime, long, &ok);
+    if(ok)
+      alacarte.brakingStartTime.setData (ethBrakeTime);
+
+    auto ethMass = asn1cpp::getField(denm_alacarte_container->ethicalVehicleMass, long, &ok);
+    if(ok)
+      alacarte.vehicleMass.setData (ethMass);
 
    denm_data.setDenmAlacarteData_asn_types (alacarte);
   }

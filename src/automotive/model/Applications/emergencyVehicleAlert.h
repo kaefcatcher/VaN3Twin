@@ -14,6 +14,7 @@
 #include "ns3/cpBasicService_v1.h"
 #include "ns3/vdpTraci.h"
 #include "ns3/socket.h"
+#include "ns3/signalInfoUtils.h"
 
 #include "ns3/sumo-sensor.h"
 #include "ns3/LDM.h"
@@ -81,6 +82,14 @@ public:
   void receiveCPM (asn1cpp::Seq<CollectivePerceptionMessage> cpm, Address from);
   void receiveCPMV1 (asn1cpp::Seq<CPMV1> cpm, Address from);
 
+  /* Extended callbacks with SignalInfo for unified message logging */
+  void receiveCAMExtended (asn1cpp::Seq<CAM> cam, Address from,
+                           StationId_t rxStationId, StationType_t rxStationType,
+                           SignalInfo sigInfo);
+  void receiveDENMExtended (denData denm, Address from,
+                            unsigned long rxStationId, long rxStationType,
+                            SignalInfo sigInfo);
+
 protected:
   virtual void DoDispose (void);
 
@@ -124,6 +133,11 @@ private:
                                double harm23, double harmTotal,
                                double deceleration, double sigma, bool isOptimal);
 
+  /* Unified message logging (MSGLOG CSV) */
+  double CalculatePairwiseHarm (double m1, double v1, double m2, double v2);
+  void LogMessageToCSV (unsigned long senderStationId, const std::string &msgType,
+                        double distance, double harm, const SignalInfo &sigInfo);
+
   vehicleData_t translateCPMV1data (asn1cpp::Seq<CPMV1> cpm, int objectIndex);
   vehicleData_t translateCPMdata (asn1cpp::Seq<CollectivePerceptionMessage> cpm,
                                   asn1cpp::Seq<PerceivedObject> object, int objectIndex);
@@ -144,6 +158,7 @@ private:
   bool m_real_time; //!< To decide wheter to use realtime scheduler
   std::string m_csv_name; //!< CSV log file name
   std::ofstream m_csv_ofstream_cam; //!< CSV log stream (CAM), created using m_csv_name
+  std::ofstream m_csv_ofstream_msglog; //!< CSV log stream (unified message log)
 
   /* Counters */
   int m_cam_received;

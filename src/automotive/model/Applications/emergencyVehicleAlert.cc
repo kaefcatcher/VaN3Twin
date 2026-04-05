@@ -47,6 +47,17 @@ appUtil_haversineDist (double lat_a, double lon_a, double lat_b, double lon_b)
                          sin (DEG_2_RAD (lon_b - lon_a) / 2)));
 }
 
+// Pairwise HARM metric from Sidorenko et al. (VTC2023-Fall), formula (3):
+// H1 = m2/(m1+m2) * |delta_v|, where delta_v = v1 - v2
+double
+appUtil_pairwiseHarm (double m1, double v1, double m2, double v2)
+{
+  double totalMass = m1 + m2;
+  if (totalMass <= 0.0)
+    return 0.0;
+  return (m2 / totalMass) * std::abs (v1 - v2);
+}
+
 // Function to compute the absolute difference between two angles (angles must be between -180 and 180)
 double
 appUtil_angDiff (double ang1, double ang2)
@@ -277,16 +288,20 @@ emergencyVehicleAlert::StartApplication (void)
   m_denService.setSocketTx (m_socket);
   m_denService.setSocketRx (m_socket);
   m_denService.setStationProperties (std::stol (m_id.substr (3)), (long) stationtype);
-  m_denService.addDENRxCallback (std::bind (&emergencyVehicleAlert::receiveDENM, this,
-                                            std::placeholders::_1, std::placeholders::_2));
+  m_denService.addDENRxCallbackExtended (std::bind (&emergencyVehicleAlert::receiveDENMExtended, this,
+                                                    std::placeholders::_1, std::placeholders::_2,
+                                                    std::placeholders::_3, std::placeholders::_4,
+                                                    std::placeholders::_5));
   m_denService.setRealTime (m_real_time);
 
   /* Set sockets, callback, station properties and TraCI VDP in CABasicService */
   m_caService.setSocketTx (m_socket);
   m_caService.setSocketRx (m_socket);
   m_caService.setStationProperties (std::stol (m_id.substr (3)), (long) stationtype);
-  m_caService.addCARxCallback (std::bind (&emergencyVehicleAlert::receiveCAM, this,
-                                          std::placeholders::_1, std::placeholders::_2));
+  m_caService.addCARxCallbackExtended (std::bind (&emergencyVehicleAlert::receiveCAMExtended, this,
+                                                  std::placeholders::_1, std::placeholders::_2,
+                                                  std::placeholders::_3, std::placeholders::_4,
+                                                  std::placeholders::_5));
   m_caService.setRealTime (m_real_time);
 
   /* Set sockets, callback, station properties and TraCI VDP in CPBasicService */
@@ -327,6 +342,15 @@ emergencyVehicleAlert::StartApplication (void)
           << "messageId,camId,timestamp,latitude,longitude,heading,speed,acceleration" << std::endl;
     }
 
+  /* Open unified message log CSV */
+  if (!m_csv_name.empty ())
+    {
+      m_csv_ofstream_msglog.open (m_csv_name + "-" + m_id + "-MSGLOG.csv", std::ofstream::trunc);
+      m_csv_ofstream_msglog
+          << "timestamp,senderStationId,receiverStationId,messageType,"
+          << "decoded,distance_m,harm,sinr,rsrp,lossType" << std::endl;
+    }
+
   /* Initialize cooperative braking state and CSV */
   m_coopBraking = CooperativeBrakingState{};
   if (m_cooperative_detection_enabled && !m_csv_name.empty ())
@@ -354,6 +378,8 @@ emergencyVehicleAlert::StopApplication ()
 
   if (m_csv_ofstream_coop.is_open ())
     m_csv_ofstream_coop.close ();
+  if (m_csv_ofstream_msglog.is_open ())
+    m_csv_ofstream_msglog.close ();
 
   uint64_t cam_sent, cpm_sent;
 
@@ -618,6 +644,157 @@ emergencyVehicleAlert::receiveCAM (asn1cpp::Seq<CAM> cam, Address from)
                                 DECI
                          << std::endl;
     }
+}
+
+/* =====================================================================
+ *  Extended CAM callback — delegates to receiveCAM(), then logs to MSGLOG
+ * ===================================================================== */
+void
+emergencyVehicleAlert::receiveCAMExtended (asn1cpp::Seq<CAM> cam, Address from,
+                                           StationId_t rxStationId,
+                                           StationType_t rxStationType,
+                                           SignalInfo sigInfo)
+{
+  // Delegate all existing CAM processing logic
+  receiveCAM (cam, from);
+
+  // Unified message logging
+  if (m_csv_name.empty ())
+    return;
+
+  unsigned long sender_id = (unsigned long) asn1cpp::getField (cam->header.stationId, long);
+
+  // Get receiver position
+  libsumo::TraCIPosition my_pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
+  my_pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (my_pos.x, my_pos.y);
+
+  // Get sender position from neighbor table (just updated by receiveCAM)
+  double sender_lat = 0.0, sender_lon = 0.0, sender_speed = 0.0;
+  auto nb_it = m_neighborTable.find (sender_id);
+  if (nb_it != m_neighborTable.end ())
+    {
+      sender_lat = nb_it->second.latitude;
+      sender_lon = nb_it->second.longitude;
+      sender_speed = nb_it->second.speed;
+    }
+
+  double distance = appUtil_haversineDist (my_pos.y, my_pos.x, sender_lat, sender_lon);
+
+  // Receiver speed from SUMO
+  double receiver_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+
+  // Pairwise HARM: H = m2/(m1+m2) * |v_sender - v_receiver|   (paper formula 3)
+  double harm = appUtil_pairwiseHarm (m_vehicle_mass, sender_speed,
+                                      m_vehicle_mass, receiver_speed);
+
+  LogMessageToCSV (sender_id, "CAM", distance, harm, sigInfo);
+}
+
+/* =====================================================================
+ *  Extended DENM callback — delegates to receiveDENM(), then logs to MSGLOG
+ * ===================================================================== */
+void
+emergencyVehicleAlert::receiveDENMExtended (denData denm, Address from,
+                                            unsigned long rxStationId,
+                                            long rxStationType,
+                                            SignalInfo sigInfo)
+{
+  // Delegate all existing DENM processing logic
+  receiveDENM (denm, from);
+
+  // Unified message logging
+  if (m_csv_name.empty ())
+    return;
+
+  // Extract sender station ID
+  ActionID_t action_id = denm.getDenmActionID ();
+  unsigned long sender_station_id = action_id.originatingStationId;
+
+  // Skip self-messages (consistent with receiveDENM)
+  unsigned long my_station_id = std::stol (m_id.substr (3));
+  if (sender_station_id == my_station_id)
+    return;
+
+  // Get receiver position
+  libsumo::TraCIPosition my_pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
+  my_pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (my_pos.x, my_pos.y);
+
+  // Get sender/event position from DENM management container
+  double event_lat = static_cast<double> (denm.getDenmMgmtLatitude ()) / DOT_ONE_MICRO;
+  double event_lon = static_cast<double> (denm.getDenmMgmtLongitude ()) / DOT_ONE_MICRO;
+
+  double distance = appUtil_haversineDist (my_pos.y, my_pos.x, event_lat, event_lon);
+
+  // Receiver speed from SUMO
+  double receiver_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+
+  // Sender speed: prefer neighbor table (from CAMs), fall back to DENM eventSpeed
+  double sender_speed = 0.0;
+  auto nb_it = m_neighborTable.find (sender_station_id);
+  if (nb_it != m_neighborTable.end ())
+    {
+      sender_speed = nb_it->second.speed;
+    }
+  else if (denm.isDenmLocationDataSet ())
+    {
+      DENDataItem<denData::denDataLocation> loc_data = denm.getDenmLocationData_asn_types ();
+      denData::denDataLocation loc = loc_data.getData ();
+      if (loc.eventSpeed.isAvailable ())
+        sender_speed = static_cast<double> (loc.eventSpeed.getData ().getValue ()) / CENTI;
+    }
+
+  // Pairwise HARM: H = m2/(m1+m2) * |v_sender - v_receiver|   (paper formula 3)
+  double harm = appUtil_pairwiseHarm (m_vehicle_mass, sender_speed,
+                                      m_vehicle_mass, receiver_speed);
+
+  LogMessageToCSV (sender_station_id, "DENM", distance, harm, sigInfo);
+}
+
+/* =====================================================================
+ *  CalculatePairwiseHarm — paper formula (3): H = m2/(m1+m2) * |delta_v|
+ * ===================================================================== */
+double
+emergencyVehicleAlert::CalculatePairwiseHarm (double m1, double v1, double m2, double v2)
+{
+  return appUtil_pairwiseHarm (m1, v1, m2, v2);
+}
+
+/* =====================================================================
+ *  LogMessageToCSV — write a single row to the unified MSGLOG CSV
+ * ===================================================================== */
+void
+emergencyVehicleAlert::LogMessageToCSV (unsigned long senderStationId,
+                                        const std::string &msgType,
+                                        double distance, double harm,
+                                        const SignalInfo &sigInfo)
+{
+  if (!m_csv_ofstream_msglog.is_open ())
+    return;
+
+  unsigned long my_station_id = std::stol (m_id.substr (3));
+
+  m_csv_ofstream_msglog << Simulator::Now ().GetSeconds () << ","
+                        << senderStationId << ","
+                        << my_station_id << ","
+                        << msgType << ","
+                        << "Successfully" << ","
+                        << distance << ","
+                        << harm << ",";
+
+  // SINR
+  if (std::isnan (sigInfo.sinr))
+    m_csv_ofstream_msglog << "NaN";
+  else
+    m_csv_ofstream_msglog << sigInfo.sinr;
+  m_csv_ofstream_msglog << ",";
+
+  // RSRP
+  if (std::isnan (sigInfo.rsrp))
+    m_csv_ofstream_msglog << "NaN";
+  else
+    m_csv_ofstream_msglog << sigInfo.rsrp;
+
+  m_csv_ofstream_msglog << ",N/A" << std::endl;
 }
 
 void

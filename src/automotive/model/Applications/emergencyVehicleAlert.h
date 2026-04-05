@@ -53,6 +53,28 @@ public:
     int forwardCount;
   };
 
+  struct CooperativeChainVehicle
+  {
+    unsigned long stationId;
+    double distance;     // meters, positive = ahead of me
+    double speed;        // m/s (from last CAM)
+    double maxDecel;     // m/s² (from DENM or SUMO default)
+    double mass;         // kg
+    bool isBraking;      // this vehicle sent a braking DENM
+  };
+
+  struct CooperativeBrakingState
+  {
+    bool active = false;
+    unsigned long originatorStationId = 0;
+    double appliedDeceleration = 0.0;
+    EventId decisionTimerEvent;
+    double sigma = 0.0;            // decision time budget (s)
+    double suboptimalDecel = 0.0;   // fallback deceleration
+    bool decisionMade = false;
+    bool rearDenmReceived = false;
+  };
+
   // void receiveCAM (CAM_t *cam, Address from);
   void receiveCAM (asn1cpp::Seq<CAM> cam, Address from);
   void receiveDENM (denData denm, Address from);
@@ -84,6 +106,23 @@ private:
   bool DetectHardBraking ();
   bool DetectCollisionRisk ();
   void CleanupForwardingTable ();
+
+  /* Cooperative ethical braking algorithm */
+  void HandleCooperativeDenm (denData &denm, unsigned long senderStationId);
+  void CooperativeDecisionTimeout ();
+  void ApplyCooperativeBraking (double deceleration, bool isOptimal);
+  double CalculateHarm (double m_follower, double v_follower, double a_follower,
+                        double m_ahead, double v_ahead, double a_ahead, double gap);
+  double CalculateDecisionBudget (double v_self, double a_max_self,
+                                  double v_ahead, double a_ahead, double gap);
+  double CalculateOptimalDeceleration (double v1, double a1, double m1,
+                                       double v2, double m2, double a2_max,
+                                       double v3, double a3, double m3,
+                                       double gap12, double gap23);
+  void LogCooperativeDecision (const std::string &role, long causeCode,
+                               unsigned long senderStationId, double harm12,
+                               double harm23, double harmTotal,
+                               double deceleration, double sigma, bool isOptimal);
 
   vehicleData_t translateCPMV1data (asn1cpp::Seq<CPMV1> cpm, int objectIndex);
   vehicleData_t translateCPMdata (asn1cpp::Seq<CollectivePerceptionMessage> cpm,
@@ -130,6 +169,11 @@ private:
   double m_event_check_interval;     // s, default 0.1
   double m_vehicle_mass;             // kg, default 1500.0
   bool m_ethical_braking_enabled;
+  bool m_cooperative_detection_enabled;
+
+  /* Cooperative braking state */
+  CooperativeBrakingState m_coopBraking;
+  std::ofstream m_csv_ofstream_coop;
 
   /* Neighbor tracking (filled from received CAMs) */
   std::unordered_map<unsigned long, NeighborState> m_neighborTable;

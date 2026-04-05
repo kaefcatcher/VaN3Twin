@@ -130,7 +130,13 @@ emergencyVehicleAlert::GetTypeId (void)
               "Vehicle mass in kg for DENM alacarte container",
               DoubleValue (1500.0),
               MakeDoubleAccessor (&emergencyVehicleAlert::m_vehicle_mass),
-              MakeDoubleChecker<double> ());
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "CooperativeDetection",
+              "Enable cooperative ethical braking algorithm based on harm minimization",
+              BooleanValue (false),
+              MakeBooleanAccessor (&emergencyVehicleAlert::m_cooperative_detection_enabled),
+              MakeBooleanChecker ());
   return tid;
 }
 
@@ -159,6 +165,7 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_event_check_interval = 0.1;
   m_vehicle_mass = 1500.0;
   m_ethical_braking_enabled = false;
+  m_cooperative_detection_enabled = false;
 }
 
 emergencyVehicleAlert::~emergencyVehicleAlert ()
@@ -320,6 +327,15 @@ emergencyVehicleAlert::StartApplication (void)
           << "messageId,camId,timestamp,latitude,longitude,heading,speed,acceleration" << std::endl;
     }
 
+  /* Initialize cooperative braking state and CSV */
+  m_coopBraking = CooperativeBrakingState{};
+  if (m_cooperative_detection_enabled && !m_csv_name.empty ())
+    {
+      m_csv_ofstream_coop.open (m_csv_name + "-" + m_id + "-COOP.csv", std::ofstream::trunc);
+      m_csv_ofstream_coop << "timestamp,vehicleId,role,causeCode,senderStationId,"
+                          << "harm12,harm23,harmTotal,deceleration,sigma,isOptimal" << std::endl;
+    }
+
   /* Initialize previous speed and schedule periodic event detection */
   m_prev_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
   m_event_check_ev = Simulator::Schedule (Seconds (m_event_check_interval),
@@ -334,6 +350,10 @@ emergencyVehicleAlert::StopApplication ()
   Simulator::Cancel (m_send_cam_ev);
   Simulator::Cancel (m_update_denm_ev);
   Simulator::Cancel (m_event_check_ev);
+  Simulator::Cancel (m_coopBraking.decisionTimerEvent);
+
+  if (m_csv_ofstream_coop.is_open ())
+    m_csv_ofstream_coop.close ();
 
   uint64_t cam_sent, cpm_sent;
 
@@ -788,6 +808,13 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
         braking_start_time = alacarte.brakingStartTime.getData ();
     }
 
+  // --- Cooperative Ethical Braking Algorithm ---
+  if (m_cooperative_detection_enabled && max_deceleration > 0.0 &&
+      (cause_code == 99 || cause_code == 97))
+    {
+      HandleCooperativeDenm (denm, sender_station_id);
+    }
+
   // --- DENM Forwarding Logic ---
   std::pair<unsigned long, long> fw_key =
       std::make_pair (sender_station_id, sequence_number);
@@ -893,7 +920,7 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
   data.setDenmAlacarteLanePosition ((long) m_client->TraCIAPI::vehicle.getLanePosition (m_id));
 
   // Set ethical V2X custom fields if enabled
-  if (m_ethical_braking_enabled)
+  if (m_ethical_braking_enabled || m_cooperative_detection_enabled)
     {
       double max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
       data.setDenmAlacarteMaxDeceleration (max_decel);
@@ -965,7 +992,7 @@ emergencyVehicleAlert::UpdateDenm (DEN_ActionID actionid)
   data.setDenmAlacarteVehicleMass ((long) m_vehicle_mass);
   data.setDenmAlacarteLanePosition ((long) m_client->TraCIAPI::vehicle.getLanePosition (m_id));
 
-  if (m_ethical_braking_enabled)
+  if (m_ethical_braking_enabled || m_cooperative_detection_enabled)
     {
       double max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
       data.setDenmAlacarteMaxDeceleration (max_decel);
@@ -1029,6 +1056,19 @@ emergencyVehicleAlert::TerminateDenm ()
     {
       NS_LOG_ERROR ("Cannot terminate DENM. Error code: " << term_retval);
     }
+  else
+    {
+      m_denm_sent++;
+    }
+
+  // Continue updating if event is still active
+  if (m_is_event_active)
+    {
+      m_update_denm_ev =
+          Simulator::Schedule (MilliSeconds (500), &emergencyVehicleAlert::UpdateDenm, this,
+                               actionid);
+    }
+}
 
   // Restore vehicle color
   libsumo::TraCIColor connected;
@@ -1143,6 +1183,522 @@ emergencyVehicleAlert::translateCPMdata (asn1cpp::Seq<CollectivePerceptionMessag
   retval.perceivedBy.setData (asn1cpp::getField (cpm->header.stationId, long));
 
   return retval;
+}
+
+/* =====================================================================
+ *  Cooperative Ethical Braking Algorithm
+ *  Based on: "Ethical 5G NR-V2X sidelink communication protocol"
+ *            (Rolich et al., VTC 2024)
+ * ===================================================================== */
+
+double
+emergencyVehicleAlert::CalculateHarm (double m_follower, double v_follower, double a_follower,
+                                      double m_ahead, double v_ahead, double a_ahead, double gap)
+{
+  if (gap < 0)
+    gap = 0;
+  if (v_follower <= v_ahead && a_follower >= a_ahead)
+    return 0.0; // follower is slower and braking harder — no collision
+
+  // Time each vehicle needs to stop
+  double t_stop_ahead = (a_ahead > 0) ? v_ahead / a_ahead : 1e9;
+  double t_stop_follower = (a_follower > 0) ? v_follower / a_follower : 1e9;
+
+  // Distance each vehicle travels until stop
+  double d_ahead_stop = v_ahead * t_stop_ahead - 0.5 * a_ahead * t_stop_ahead * t_stop_ahead;
+  double d_follower_stop = v_follower * t_stop_follower - 0.5 * a_follower * t_stop_follower * t_stop_follower;
+
+  // If follower stops before closing the gap — no collision
+  if (d_follower_stop <= gap + d_ahead_stop)
+    return 0.0;
+
+  // Find collision time by solving piecewise kinematics
+  // Phase 1: both moving, t in [0, min(t_stop_ahead, t_stop_follower)]
+  double t_phase1_end = std::min (t_stop_ahead, t_stop_follower);
+
+  // gap(t) = gap + (v_ahead - v_follower)*t + 0.5*(a_follower - a_ahead)*t^2
+  // Solve gap(t) = 0: 0.5*(a_follower - a_ahead)*t^2 + (v_ahead - v_follower)*t + gap = 0
+  double A = 0.5 * (a_follower - a_ahead);
+  double B = v_ahead - v_follower;
+  double C = gap;
+
+  double t_collision = -1;
+
+  if (std::abs (A) > 1e-9)
+    {
+      double discriminant = B * B - 4 * A * C;
+      if (discriminant >= 0)
+        {
+          double sqrt_disc = std::sqrt (discriminant);
+          double t1 = (-B - sqrt_disc) / (2 * A);
+          double t2 = (-B + sqrt_disc) / (2 * A);
+          if (t1 > 0 && t1 <= t_phase1_end)
+            t_collision = t1;
+          else if (t2 > 0 && t2 <= t_phase1_end)
+            t_collision = t2;
+        }
+    }
+  else if (std::abs (B) > 1e-9)
+    {
+      double t = -C / B;
+      if (t > 0 && t <= t_phase1_end)
+        t_collision = t;
+    }
+
+  // Phase 2: ahead stopped, follower still moving
+  if (t_collision < 0 && t_stop_ahead < t_stop_follower)
+    {
+      double gap_at_phase2_start = gap + v_ahead * t_stop_ahead - 0.5 * a_ahead * t_stop_ahead * t_stop_ahead
+                                   - (v_follower * t_stop_ahead - 0.5 * a_follower * t_stop_ahead * t_stop_ahead);
+      double v_follower_phase2 = v_follower - a_follower * t_stop_ahead;
+
+      if (v_follower_phase2 > 0 && gap_at_phase2_start > 0)
+        {
+          // gap(dt) = gap_at_phase2_start - v_follower_phase2 * dt + 0.5 * a_follower * dt^2
+          double A2 = 0.5 * a_follower;
+          double B2 = -v_follower_phase2;
+          double C2 = gap_at_phase2_start;
+
+          double disc2 = B2 * B2 - 4 * A2 * C2;
+          if (disc2 >= 0)
+            {
+              double sqrt_disc2 = std::sqrt (disc2);
+              double dt1 = (-B2 - sqrt_disc2) / (2 * A2);
+              double dt2 = (-B2 + sqrt_disc2) / (2 * A2);
+              double dt_max = t_stop_follower - t_stop_ahead;
+              if (dt1 > 0 && dt1 <= dt_max)
+                t_collision = t_stop_ahead + dt1;
+              else if (dt2 > 0 && dt2 <= dt_max)
+                t_collision = t_stop_ahead + dt2;
+            }
+        }
+    }
+
+  if (t_collision < 0)
+    return 0.0; // No collision
+
+  // Compute relative velocity at collision
+  double v_f_at_tc = std::max (0.0, v_follower - a_follower * t_collision);
+  double v_a_at_tc = std::max (0.0, v_ahead - a_ahead * t_collision);
+  double v_rel = v_f_at_tc - v_a_at_tc;
+
+  if (v_rel <= 0)
+    return 0.0;
+
+  double m_reduced = (m_follower * m_ahead) / (m_follower + m_ahead);
+  return 0.5 * m_reduced * v_rel * v_rel;
+}
+
+double
+emergencyVehicleAlert::CalculateDecisionBudget (double v_self, double a_max_self,
+                                                double v_ahead, double a_ahead, double gap)
+{
+  // During sigma: self at constant v_self, ahead braking at a_ahead
+  // After sigma: self brakes at a_max_self
+  // Requirement: self stops before reaching ahead's final position
+  //
+  // ahead's stopping distance from now: d_ahead = v_ahead^2 / (2*a_ahead)
+  // During sigma, gap changes: gap(sigma) = gap + (v_ahead - v_self)*sigma - 0.5*a_ahead*sigma^2
+  //   (ahead decelerates, self at constant speed)
+  // After sigma, self needs: d_self = v_self^2 / (2*a_max_self)
+  // ahead still travels: d_ahead_remaining = depends on phase
+  //
+  // Simplified: require gap(sigma) >= d_self - d_ahead_remaining
+  // For H_{self,ahead} = 0: self must stop before hitting ahead
+
+  if (a_max_self <= 0 || v_self <= 0)
+    return 0.0;
+
+  double d_self_brake = v_self * v_self / (2.0 * a_max_self);
+
+  // ahead's remaining stopping distance as function of sigma
+  // v_ahead(sigma) = max(0, v_ahead - a_ahead*sigma)
+  // t_stop_ahead = v_ahead / a_ahead
+
+  double t_stop_ahead = (a_ahead > 0) ? v_ahead / a_ahead : 0;
+
+  // Binary search for max sigma where no collision occurs
+  double sigma_lo = 0.0;
+  double sigma_hi = 5.0; // max 5 seconds
+  double sigma = 0.0;
+
+  for (int i = 0; i < 50; i++)
+    {
+      double sigma_mid = (sigma_lo + sigma_hi) / 2.0;
+
+      // Gap at sigma_mid (ahead braking, self at constant speed)
+      double t_eff = std::min (sigma_mid, t_stop_ahead);
+      double d_ahead_during_sigma = v_ahead * t_eff - 0.5 * a_ahead * t_eff * t_eff;
+      double d_self_during_sigma = v_self * sigma_mid;
+      double gap_at_sigma = gap + d_ahead_during_sigma - d_self_during_sigma;
+
+      // Ahead's remaining stopping distance after sigma
+      double v_ahead_at_sigma = std::max (0.0, v_ahead - a_ahead * sigma_mid);
+      double d_ahead_remaining = v_ahead_at_sigma * v_ahead_at_sigma / (2.0 * a_ahead + 1e-9);
+
+      // Self needs d_self_brake to stop; ahead still travels d_ahead_remaining
+      double margin = gap_at_sigma + d_ahead_remaining - d_self_brake;
+
+      if (margin >= 0)
+        {
+          sigma = sigma_mid;
+          sigma_lo = sigma_mid;
+        }
+      else
+        {
+          sigma_hi = sigma_mid;
+        }
+    }
+
+  return std::max (0.0, sigma);
+}
+
+double
+emergencyVehicleAlert::CalculateOptimalDeceleration (double v1, double a1, double m1,
+                                                     double v2, double m2, double a2_max,
+                                                     double v3, double a3, double m3,
+                                                     double gap12, double gap23)
+{
+  double best_a2 = a2_max;
+  double min_harm = std::numeric_limits<double>::max ();
+
+  // Sweep a2 from 0.1 to a2_max in 0.1 m/s^2 steps
+  for (double a2 = 0.1; a2 <= a2_max + 0.05; a2 += 0.1)
+    {
+      double clamped_a2 = std::min (a2, a2_max);
+      // H_{1,2}: vehicle 2 follows vehicle 1
+      double h12 = CalculateHarm (m2, v2, clamped_a2, m1, v1, a1, gap12);
+      // H_{2,3}: vehicle 3 follows vehicle 2
+      double h23 = CalculateHarm (m3, v3, a3, m2, v2, clamped_a2, gap23);
+      double h_total = h12 + h23;
+
+      if (h_total < min_harm)
+        {
+          min_harm = h_total;
+          best_a2 = clamped_a2;
+        }
+    }
+
+  return best_a2;
+}
+
+void
+emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long senderStationId)
+{
+  // Don't re-enter if already actively processing
+  if (m_coopBraking.active && m_coopBraking.decisionMade)
+    return;
+
+  unsigned long my_station_id = std::stol (m_id.substr (3));
+
+  // Extract originator from DENM action ID
+  ActionID_t action_id = denm.getDenmActionID ();
+  unsigned long originator_id = action_id.originatingStationId;
+
+  // Get own kinematic state from SUMO
+  double my_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+  double my_max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
+  double my_heading = m_client->TraCIAPI::vehicle.getAngle (m_id);
+
+  // Extract sender's data from DENM alacarte
+  double sender_max_decel = 0.0;
+  double sender_mass = 1500.0;
+  if (denm.isDenmAlacarteDataSet ())
+    {
+      auto alacarte = denm.getDenmAlacarteData_asn_types ().getData ();
+      if (alacarte.maxDeceleration.isAvailable ())
+        sender_max_decel = alacarte.maxDeceleration.getData ();
+      if (alacarte.vehicleMass.isAvailable ())
+        sender_mass = static_cast<double> (alacarte.vehicleMass.getData ());
+    }
+
+  // Get sender speed from DENM location container
+  double sender_speed = 0.0;
+  if (denm.isDenmLocationDataSet ())
+    {
+      auto loc = denm.getDenmLocationData_asn_types ().getData ();
+      if (loc.eventSpeed.isAvailable ())
+        sender_speed = static_cast<double> (loc.eventSpeed.getData ().getValue ()) / CENTI;
+    }
+
+  // Get leader (vehicle ahead) info from TraCI
+  auto leader = m_client->TraCIAPI::vehicle.getLeader (m_id, 200.0);
+  bool has_leader = !leader.first.empty () && leader.second >= 0;
+  double gap_to_leader = has_leader ? leader.second : 0;
+  double leader_speed = 0;
+  double leader_max_decel = 7.5; // default
+  unsigned long leader_station_id = 0;
+
+  if (has_leader)
+    {
+      try
+        {
+          leader_speed = m_client->TraCIAPI::vehicle.getSpeed (leader.first);
+          leader_max_decel = m_client->TraCIAPI::vehicle.getDecel (leader.first);
+          leader_station_id = std::stol (leader.first.substr (3));
+        }
+      catch (...)
+        {
+          has_leader = false;
+        }
+    }
+
+  // Find follower: closest neighbor behind me with similar heading
+  bool has_follower = false;
+  double gap_to_follower = 0;
+  double follower_speed = 0;
+  double follower_max_decel = 7.5;
+  double follower_mass = 1500.0;
+  unsigned long follower_station_id = 0;
+
+  libsumo::TraCIPosition my_pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
+  my_pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (my_pos.x, my_pos.y);
+
+  double min_behind_dist = std::numeric_limits<double>::max ();
+  for (const auto &neighbor : m_neighborTable)
+    {
+      // Skip if heading differs by more than 30 degrees
+      if (appUtil_angDiff (my_heading, neighbor.second.heading) > 30.0)
+        continue;
+
+      double dist = appUtil_haversineDist (my_pos.y, my_pos.x,
+                                           neighbor.second.latitude, neighbor.second.longitude);
+
+      // Determine if neighbor is behind: compute bearing from me to neighbor
+      double dLon = neighbor.second.longitude - my_pos.x;
+      double dLat = neighbor.second.latitude - my_pos.y;
+      double bearing = std::atan2 (dLon, dLat) * 180.0 / M_PI;
+      if (bearing < 0)
+        bearing += 360.0;
+
+      // "Behind" means bearing is roughly opposite to my heading
+      double heading_to_neighbor_diff = appUtil_angDiff (bearing, my_heading);
+      if (heading_to_neighbor_diff > 90.0 && dist < min_behind_dist && dist < 200.0)
+        {
+          min_behind_dist = dist;
+          has_follower = true;
+          gap_to_follower = dist;
+          follower_speed = neighbor.second.speed;
+          follower_station_id = neighbor.second.stationId;
+        }
+    }
+
+  // Extract cause code for logging
+  long cause_code = -1;
+  if (denm.isDenmSituationDataSet ())
+    {
+      auto sit = denm.getDenmSituationData_asn_types ().getData ();
+      cause_code = sit.causeCode;
+    }
+
+  // Determine role based on position relative to the braking originator
+  bool originator_is_leader = (has_leader && leader_station_id == originator_id);
+  bool sender_is_behind = (senderStationId == follower_station_id);
+
+  // === CASE: I'm already waiting for rear DENM and this is the rear DENM ===
+  if (m_coopBraking.active && !m_coopBraking.decisionMade && sender_is_behind)
+    {
+      m_coopBraking.rearDenmReceived = true;
+      Simulator::Cancel (m_coopBraking.decisionTimerEvent);
+
+      // Recalculate with updated rear vehicle info
+      double v1 = leader_speed;
+      double a1 = sender_max_decel > 0 ? sender_max_decel : leader_max_decel;
+      double m1_mass = sender_mass;
+      double v3 = follower_speed;
+      double a3 = follower_max_decel;
+      double m3_mass = follower_mass;
+
+      // Use originator's max decel if available from the DENM we received earlier
+      if (originator_is_leader && sender_max_decel > 0)
+        a1 = sender_max_decel;
+
+      double optimal_a2 = CalculateOptimalDeceleration (
+          v1, a1, m1_mass, my_speed, m_vehicle_mass, my_max_decel,
+          v3, a3, m3_mass, gap_to_leader, gap_to_follower);
+
+      double h12 = CalculateHarm (m_vehicle_mass, my_speed, optimal_a2,
+                                  m1_mass, v1, a1, gap_to_leader);
+      double h23 = CalculateHarm (m3_mass, v3, a3,
+                                  m_vehicle_mass, my_speed, optimal_a2, gap_to_follower);
+
+      NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                       << " COOPERATIVE: rear DENM received within sigma, optimal a2*="
+                       << optimal_a2 << " m/s^2, H12=" << h12 << " H23=" << h23
+                       << " Htotal=" << h12 + h23);
+
+      LogCooperativeDecision ("middle", cause_code, senderStationId,
+                              h12, h23, h12 + h23, optimal_a2, m_coopBraking.sigma, true);
+
+      ApplyCooperativeBraking (optimal_a2, true);
+      return;
+    }
+
+  // === CASE: Middle vehicle — originator is ahead, I have a follower ===
+  if (originator_is_leader && has_follower && !m_coopBraking.active)
+    {
+      m_coopBraking.active = true;
+      m_coopBraking.originatorStationId = originator_id;
+      m_coopBraking.decisionMade = false;
+      m_coopBraking.rearDenmReceived = false;
+
+      double a_ahead = sender_max_decel > 0 ? sender_max_decel : leader_max_decel;
+
+      // Calculate decision time budget sigma
+      double sigma = CalculateDecisionBudget (my_speed, my_max_decel, leader_speed, a_ahead, gap_to_leader);
+      m_coopBraking.sigma = sigma;
+
+      // Calculate suboptimal deceleration (guarantees H_{self,ahead} = 0)
+      double subopt_a2 = (gap_to_leader > 0)
+          ? my_speed * my_speed / (2.0 * gap_to_leader + leader_speed * leader_speed / (a_ahead + 1e-9))
+          : my_max_decel;
+      subopt_a2 = std::min (subopt_a2, my_max_decel);
+      subopt_a2 = std::max (subopt_a2, 0.1);
+      m_coopBraking.suboptimalDecel = subopt_a2;
+
+      NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                       << " COOPERATIVE: middle vehicle role, sigma=" << sigma
+                       << "s, suboptimal_a2=" << subopt_a2
+                       << " m/s^2, waiting for rear DENM from station " << follower_station_id);
+
+      // Schedule decision timeout
+      m_coopBraking.decisionTimerEvent = Simulator::Schedule (
+          Seconds (sigma), &emergencyVehicleAlert::CooperativeDecisionTimeout, this);
+      return;
+    }
+
+  // === CASE: Middle vehicle — originator is ahead, no follower (I'm effectively rear) ===
+  // === CASE: Rear vehicle — no follower behind me ===
+  if ((originator_is_leader || senderStationId == originator_id) && !has_follower && !m_coopBraking.active)
+    {
+      m_coopBraking.active = true;
+      m_coopBraking.originatorStationId = originator_id;
+      m_coopBraking.decisionMade = true;
+
+      NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                       << " COOPERATIVE: rear vehicle role, braking at max decel="
+                       << my_max_decel << " m/s^2");
+
+      double h_ahead = CalculateHarm (m_vehicle_mass, my_speed, my_max_decel,
+                                      sender_mass, sender_speed, sender_max_decel, gap_to_leader);
+
+      LogCooperativeDecision ("rear", cause_code, senderStationId,
+                              h_ahead, 0.0, h_ahead, my_max_decel, 0.0, false);
+
+      ApplyCooperativeBraking (my_max_decel, false);
+      return;
+    }
+
+  // === CASE: Received forwarded DENM about someone further ahead ===
+  if (!originator_is_leader && !m_coopBraking.active)
+    {
+      // I'm further back in the chain — treat as rear vehicle: brake at max
+      m_coopBraking.active = true;
+      m_coopBraking.originatorStationId = originator_id;
+      m_coopBraking.decisionMade = true;
+
+      NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                       << " COOPERATIVE: chain vehicle, braking at max decel="
+                       << my_max_decel << " m/s^2");
+
+      double h_ahead = has_leader ?
+          CalculateHarm (m_vehicle_mass, my_speed, my_max_decel,
+                         1500.0, leader_speed, leader_max_decel, gap_to_leader) : 0.0;
+
+      LogCooperativeDecision ("chain", cause_code, senderStationId,
+                              h_ahead, 0.0, h_ahead, my_max_decel, 0.0, false);
+
+      ApplyCooperativeBraking (my_max_decel, false);
+    }
+}
+
+void
+emergencyVehicleAlert::CooperativeDecisionTimeout ()
+{
+  if (m_coopBraking.decisionMade)
+    return;
+
+  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                   << " COOPERATIVE: sigma timeout, applying suboptimal decel="
+                   << m_coopBraking.suboptimalDecel << " m/s^2");
+
+  // Get current kinematic state for harm calculation
+  double my_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+  auto leader = m_client->TraCIAPI::vehicle.getLeader (m_id, 200.0);
+  double leader_speed = 0;
+  double leader_max_decel = 7.5;
+  double gap_to_leader = 0;
+  double leader_mass = 1500.0;
+
+  if (!leader.first.empty () && leader.second >= 0)
+    {
+      try
+        {
+          leader_speed = m_client->TraCIAPI::vehicle.getSpeed (leader.first);
+          leader_max_decel = m_client->TraCIAPI::vehicle.getDecel (leader.first);
+          gap_to_leader = leader.second;
+        }
+      catch (...)
+        {
+        }
+    }
+
+  double h12 = CalculateHarm (m_vehicle_mass, my_speed, m_coopBraking.suboptimalDecel,
+                               leader_mass, leader_speed, leader_max_decel, gap_to_leader);
+
+  LogCooperativeDecision ("middle", -1, m_coopBraking.originatorStationId,
+                          h12, 0.0, h12, m_coopBraking.suboptimalDecel,
+                          m_coopBraking.sigma, false);
+
+  ApplyCooperativeBraking (m_coopBraking.suboptimalDecel, false);
+}
+
+void
+emergencyVehicleAlert::ApplyCooperativeBraking (double deceleration, bool isOptimal)
+{
+  m_coopBraking.decisionMade = true;
+  m_coopBraking.appliedDeceleration = deceleration;
+
+  double current_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+  if (current_speed > 0 && deceleration > 0)
+    {
+      double duration = current_speed / deceleration;
+      m_client->TraCIAPI::vehicle.slowDown (m_id, 0.0, duration);
+    }
+
+  // Visual feedback: yellow for optimal, orange for suboptimal
+  libsumo::TraCIColor color;
+  if (isOptimal)
+    {
+      color.r = 255; color.g = 255; color.b = 0; color.a = 255; // yellow
+    }
+  else
+    {
+      color.r = 255; color.g = 165; color.b = 0; color.a = 255; // orange
+    }
+  m_client->TraCIAPI::vehicle.setColor (m_id, color);
+}
+
+void
+emergencyVehicleAlert::LogCooperativeDecision (const std::string &role, long causeCode,
+                                               unsigned long senderStationId, double harm12,
+                                               double harm23, double harmTotal,
+                                               double deceleration, double sigma, bool isOptimal)
+{
+  if (m_csv_ofstream_coop.is_open ())
+    {
+      m_csv_ofstream_coop << Simulator::Now ().GetSeconds () << ","
+                          << m_id << ","
+                          << role << ","
+                          << causeCode << ","
+                          << senderStationId << ","
+                          << harm12 << ","
+                          << harm23 << ","
+                          << harmTotal << ","
+                          << deceleration << ","
+                          << sigma << ","
+                          << (isOptimal ? 1 : 0) << std::endl;
+    }
 }
 
 } // namespace ns3

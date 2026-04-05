@@ -15,6 +15,7 @@
 #include "LanePosition.h"
 #include "ITS-Container_Temperature.h"
 #include "PositioningSolutionType.h"
+#include "NativeInteger.h"
 #include "constr_SEQUENCE.h"
 
 #ifdef __cplusplus
@@ -38,7 +39,10 @@ typedef struct AlacarteContainer {
 	 * This type is extensible,
 	 * possible extensions are below.
 	 */
-	
+	long	*ethicalMaxDeceleration;	/* OPTIONAL, extension: deceleration × 10 (0.1 m/s² units) */
+	long	*ethicalBrakingStartTime;	/* OPTIONAL, extension: ITS timestamp in ms */
+	long	*ethicalVehicleMass;	/* OPTIONAL, extension: mass in kg */
+
 	/* Context for parsing across buffer boundaries */
 	asn_struct_ctx_t _asn_ctx;
 } AlacarteContainer_t;
@@ -46,7 +50,7 @@ typedef struct AlacarteContainer {
 /* Implementation */
 extern asn_TYPE_descriptor_t asn_DEF_AlacarteContainer;
 extern asn_SEQUENCE_specifics_t asn_SPC_AlacarteContainer_specs_1;
-extern asn_TYPE_member_t asn_MBR_AlacarteContainer_1[6];
+extern asn_TYPE_member_t asn_MBR_AlacarteContainer_1[9];
 
 #ifdef __cplusplus
 }

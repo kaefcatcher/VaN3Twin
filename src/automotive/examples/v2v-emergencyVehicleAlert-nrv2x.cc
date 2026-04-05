@@ -125,7 +125,8 @@ main (int argc, char *argv[])
   int numberOfNodes;
   uint32_t nodeCounter = 0;
 
-  double penetrationRate = config.value("penetrationRate", 0.7);
+  double penetrationRate = 0.7;
+  bool cooperativeDetection = false;
 
   xmlDocPtr rou_xml_file;
   double m_baseline_prr = config.value("m_baseline_prr", 150.0);
@@ -216,6 +217,7 @@ main (int argc, char *argv[])
   cmd.AddValue ("baseline", "Baseline for PRR calculation", m_baseline_prr);
   cmd.AddValue ("met-sup","Use the Metric supervisor or not",m_metric_sup);
   cmd.AddValue ("penetrationRate", "Rate of vehicles equipped with wireless communication devices", penetrationRate);
+  cmd.AddValue ("cooperative-detection", "Enable cooperative ethical braking algorithm", cooperativeDetection);
 
   cmd.AddValue ("simTime",
                 "Simulation time in seconds",
@@ -734,6 +736,12 @@ main (int argc, char *argv[])
   EmergencyVehicleAlertHelper.SetAttribute ("CSV", StringValue(csv_name));
   EmergencyVehicleAlertHelper.SetAttribute ("Model", StringValue ("nrv2x"));
   EmergencyVehicleAlertHelper.SetAttribute ("MetricSupervisor", PointerValue (metSup));
+
+  if (cooperativeDetection)
+    {
+      EmergencyVehicleAlertHelper.SetAttribute ("CooperativeDetection", BooleanValue (true));
+      EmergencyVehicleAlertHelper.SetAttribute ("EthicalBraking", BooleanValue (true));
+    }
 
   /* callback function for node creation */
   int i=0;

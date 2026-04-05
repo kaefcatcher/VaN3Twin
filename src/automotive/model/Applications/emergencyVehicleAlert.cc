@@ -1056,6 +1056,19 @@ emergencyVehicleAlert::TerminateDenm ()
     {
       NS_LOG_ERROR ("Cannot terminate DENM. Error code: " << term_retval);
     }
+  else
+    {
+      m_denm_sent++;
+    }
+
+  // Continue updating if event is still active
+  if (m_is_event_active)
+    {
+      m_update_denm_ev =
+          Simulator::Schedule (MilliSeconds (500), &emergencyVehicleAlert::UpdateDenm, this,
+                               actionid);
+    }
+}
 
   // Restore vehicle color
   libsumo::TraCIColor connected;

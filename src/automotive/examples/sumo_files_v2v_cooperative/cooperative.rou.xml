@@ -3,13 +3,13 @@
 
     <!-- Отключаем интеллектуальную модель: используем carFollowModel="ACC" -->
     <!-- Устанавливаем постоянную скорость и нулевую дисперсию скорости -->
-    <vType id="leader"   accel="10" decel="10" maxSpeed="10" length="5.0"
+    <vType id="leader"   accel="10" decel="10" tau="0.5" maxSpeed="10" length="5.0"
            carFollowModel="ACC"
            color="1,0,0"/>
-    <vType id="middle"   accel="15" decel="1" maxSpeed="30" length="5.0"
+    <vType id="middle"   accel="15" decel="1" maxSpeed="30" tau="0.5" length="5.0"
            carFollowModel="ACC"
            color="1,1,0"/>
-    <vType id="follower" accel="15" decel="1" maxSpeed="30" length="5.0"
+    <vType id="follower" accel="15" decel="1" maxSpeed="30" tau="0.5" length="5.0"
            carFollowModel="ACC" 
            color="0,0,1"/>
 

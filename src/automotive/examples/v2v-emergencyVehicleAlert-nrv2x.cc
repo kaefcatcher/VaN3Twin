@@ -117,7 +117,7 @@ main (int argc, char *argv[])
   bool realtime = config.value("realtime", false);
   bool sumo_gui = config.value("sumo_gui", true);
   double sumo_updates = config.value("sumo_updates", 0.01);
-  std::string csv_name = "mylog.csv";
+  std::string csv_name = "mylog";
   std::string csv_name_cumulative = config.value("csv_name_cumulative", std::string("results"));
   std::string sumo_netstate_file_name;
   bool vehicle_vis = config.value("vehicle_vis", false);

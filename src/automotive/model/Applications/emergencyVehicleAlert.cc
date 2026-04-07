@@ -115,13 +115,13 @@ emergencyVehicleAlert::GetTypeId (void)
           .AddAttribute (
               "HardBrakeThreshold",
               "Acceleration threshold (m/s^2) below which hard braking is detected",
-              DoubleValue (-4.0),
+              DoubleValue (0.0),
               MakeDoubleAccessor (&emergencyVehicleAlert::m_hard_brake_threshold),
               MakeDoubleChecker<double> ())
           .AddAttribute (
               "CollisionRiskDistance",
               "Distance threshold (m) for collision risk detection with leading vehicle",
-              DoubleValue (20.0),
+              DoubleValue (100.0),
               MakeDoubleAccessor (&emergencyVehicleAlert::m_collision_risk_distance),
               MakeDoubleChecker<double> ())
           .AddAttribute (
@@ -171,7 +171,7 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_prev_speed = 0.0;
   m_is_event_active = false;
   m_active_action_id = {};
-  m_hard_brake_threshold = -4.0;
+  m_hard_brake_threshold = 0.0;
   m_collision_risk_distance = 20.0;
   m_event_check_interval = 0.1;
   m_vehicle_mass = 1500.0;
@@ -417,7 +417,8 @@ emergencyVehicleAlert::CheckForEvents ()
   double current_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
   double acceleration = (current_speed - m_prev_speed) / m_event_check_interval;
   m_prev_speed = current_speed;
-
+  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                           << " detected BRAKING (accel=" << acceleration << " m/s^2)");
   if (!m_is_event_active)
     {
       if (DetectHardBraking ())
@@ -509,7 +510,7 @@ emergencyVehicleAlert::DetectCollisionRisk ()
     {
       // Time to collision estimate
       double ttc = gap / closing_speed;
-      if (ttc < 3.0) // Less than 3 seconds to collision
+      if (ttc < 0.5) // Less than 0.5 seconds to collision
         return true;
     }
 
@@ -1090,7 +1091,7 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
   // Set location container — speed in cm/s, heading in 0.1 degrees
   double speed_ms = m_client->TraCIAPI::vehicle.getSpeed (m_id);
   long speed_cm_s = (long) (speed_ms * CENTI);
-  data.setDenmLocationEventSpeed (speed_cm_s, SpeedConfidence_equalOrWithinOneCentimeterPerSec);
+  data.setDenmLocationEventSpeed (speed_cm_s, SpeedConfidenceV1_equalOrWithinOneCentimeterPerSec);
 
   // Set alacarte container
   data.setDenmAlacarteVehicleMass ((long) m_vehicle_mass);
@@ -1163,7 +1164,7 @@ emergencyVehicleAlert::UpdateDenm (DEN_ActionID actionid)
   // Update speed
   double speed_ms = m_client->TraCIAPI::vehicle.getSpeed (m_id);
   long speed_cm_s = (long) (speed_ms * CENTI);
-  data.setDenmLocationEventSpeed (speed_cm_s, SpeedConfidence_equalOrWithinOneCentimeterPerSec);
+  data.setDenmLocationEventSpeed (speed_cm_s,   SpeedConfidenceV1_equalOrWithinOneCentimeterPerSec);
 
   // Update alacarte
   data.setDenmAlacarteVehicleMass ((long) m_vehicle_mass);
@@ -1243,9 +1244,8 @@ emergencyVehicleAlert::TerminateDenm ()
     {
       m_update_denm_ev =
           Simulator::Schedule (MilliSeconds (500), &emergencyVehicleAlert::UpdateDenm, this,
-                               actionid);
+                               m_active_action_id);
     }
-}
 
   // Restore vehicle color
   libsumo::TraCIColor connected;

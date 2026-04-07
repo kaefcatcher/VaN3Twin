@@ -33,7 +33,8 @@
 #include "ns3/vehicle-visualizer-module.h"
 #include "ns3/MetricSupervisor.h"
 #include <unistd.h>
-#include <nlohmann/json.hpp>
+// #include <nlohmann/json.hpp>
+#include "json.hpp"
 #include <fstream>
 
 using json = nlohmann::json;

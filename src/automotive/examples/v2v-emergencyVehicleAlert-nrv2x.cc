@@ -49,7 +49,7 @@ using namespace ns3;
 using json = nlohmann::json;
 
 #include <fstream>
-#include <nlohmann/json.hpp>
+// #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
 
@@ -117,16 +117,16 @@ main (int argc, char *argv[])
   bool realtime = config.value("realtime", false);
   bool sumo_gui = config.value("sumo_gui", true);
   double sumo_updates = config.value("sumo_updates", 0.01);
-  std::string csv_name;
-  std::string csv_name_cumulative = config.value("csv_name_cumulative", std::string(""));
+  std::string csv_name = "mylog.csv";
+  std::string csv_name_cumulative = config.value("csv_name_cumulative", std::string("results"));
   std::string sumo_netstate_file_name;
   bool vehicle_vis = config.value("vehicle_vis", false);
 
   int numberOfNodes;
   uint32_t nodeCounter = 0;
 
-  double penetrationRate = 0.7;
-  bool cooperativeDetection = false;
+  double penetrationRate = 1.0;
+  bool cooperativeDetection = true;
 
   xmlDocPtr rou_xml_file;
   double m_baseline_prr = config.value("m_baseline_prr", 150.0);

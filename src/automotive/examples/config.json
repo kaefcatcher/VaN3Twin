@@ -3,12 +3,12 @@
   "sumo_gui": true,
   "sumo_updates": 0.01,
 
-  "sumo_folder": "src/automotive/examples/sumo_files_v2v_accident/",
-  "mob_trace": "simple.rou.xml",
-  "sumo_config": "src/automotive/examples/sumo_files_v2v_accident/simple.sumo.cfg",
+  "sumo_folder": "src/automotive/examples/sumo_files_v2v_cooperative/",
+  "mob_trace": "cooperative.rou.xml",
+  "sumo_config": "src/automotive/examples/sumo_files_v2v_cooperative/cooperative.sumo.cfg",
 
   "vehicle_vis": false,
-  "penetrationRate": 0.7,
+  "penetrationRate": 1.0,
   "simTime": 100.0,
 
   "tx_power": 23.0,
@@ -23,5 +23,5 @@
   "m_baseline_prr": 150.0,
   "m_metric_sup": true,
 
-  "csv_name_cumulative": "results"
+  "csv_name_cumulative": "res"
 }

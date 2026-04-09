@@ -1,13 +1,32 @@
-<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
-<vType id="platoon" accel="2.6" decel="7.5" emergencyDecel="9.0" maxSpeed="20" minGap="2.0" tau="0.8" length="5.0" color="0,0,1"/>
-<vehicle id="Veh0" type="platoon" depart="0.00">
-<route edges="E0"/>
-<stop lane="E0_0" endPos="1000" duration="200"/>
-</vehicle>
-<vehicle id="Veh1" type="platoon" depart="1.50">
-<route edges="E0"/>
-</vehicle>
-<vehicle id="Veh2" type="platoon" depart="3.00">
-<route edges="E0"/>
-</vehicle>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+
+    <!-- Отключаем интеллектуальную модель: используем carFollowModel="ACC" -->
+    <!-- Устанавливаем постоянную скорость и нулевую дисперсию скорости -->
+    <vType id="leader"   accel="10" decel="10" tau="0.5" maxSpeed="10" length="5.0"
+           carFollowModel="ACC"
+           color="1,0,0"/>
+    <vType id="middle"   accel="15" decel="1" maxSpeed="30" tau="0.5" length="5.0"
+           carFollowModel="ACC"
+           color="1,1,0"/>
+    <vType id="follower" accel="15" decel="1" maxSpeed="30" tau="0.5" length="5.0"
+           carFollowModel="ACC" 
+           color="0,0,1"/>
+
+    <!-- Лидер останавливается на позиции 600 м и стоит 200 секунд -->
+    <vehicle id="veh0" type="leader" depart="0.00">
+        <route edges="E0"/>
+        <stop lane="E0_0" endPos="600" duration="200"/>
+    </vehicle>
+
+    <!-- Средний автомобиль выезжает через 0.5 сек, движется со скоростью 20 м/с -->
+    <vehicle id="veh1" type="middle" depart="0.50">
+        <route edges="E0"/>
+    </vehicle>
+
+    <!-- Задний автомобиль выезжает через 1.0 сек, также со скоростью 20 м/с -->
+    <vehicle id="veh2" type="follower" depart="1.00">
+        <route edges="E0"/>
+    </vehicle>
+
 </routes>

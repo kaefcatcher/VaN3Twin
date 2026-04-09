@@ -553,8 +553,8 @@ TEST_F (HarmCalcTest, NegativeGapClampedToZero)
 
 TEST_F (HarmCalcTest, EqualMassKnownCollision)
 {
-  // Follower 30 m/s, ahead 0 m/s, both 1500 kg, gap 0, decel 5
-  // Immediate collision at t=0 with v_rel = 30
+  // Follower 30 m/s, ahead 0 m/s (stationary), both 1500 kg, gap=0, decel 5
+  // Instant collision at t=0: v_rel = 30 m/s
   // m_reduced = 1500*1500/(1500+1500) = 750
   // harm = 0.5 * 750 * 30^2 = 337500
   double harm = m_app.CalculateHarm (1500, 30, 5, 1500, 0, 0, 10);
@@ -563,18 +563,18 @@ TEST_F (HarmCalcTest, EqualMassKnownCollision)
 
 TEST_F (HarmCalcTest, UnequalMassCollision)
 {
-  // Truck (3000 kg) following car (1000 kg), gap 0
-  // Follower 30 m/s, ahead 0 m/s
+  // Truck (3000 kg) following car (1000 kg), gap=0
+  // Follower 30 m/s, ahead 0 m/s (stationary)
   // m_reduced = 3000*1000/4000 = 750
-  // harm = 0.5 * 750 * 900 = 337500
-  double harm = m_app.CalculateHarm (3000, 30, 5, 1000, 0, 0, 10);
+  // harm = 0.5 * 750 * 30^2 = 337500
+  double harm = m_app.CalculateHarm (3000, 30, 5, 1000, 0, 0, 0);
   EXPECT_NEAR (harm, 337500.0, 1.0);
 }
 
 TEST_F (HarmCalcTest, HighSpeedCollision)
 {
-  // Very high speed collision
-  double harm = m_app.CalculateHarm (1500, 40, 5, 1500, 0, 0, 10);
+  // Very high speed collision, gap=0
+  double harm = m_app.CalculateHarm (1500, 40, 5, 1500, 0, 0, 0);
   // m_reduced = 750, v_rel = 40
   // harm = 0.5 * 750 * 1600 = 600000
   EXPECT_NEAR (harm, 600000.0, 1.0);
@@ -591,12 +591,21 @@ TEST_F (HarmCalcTest, Phase2Collision)
   EXPECT_GT (harm, 0.0);
 }
 
-TEST_F (HarmCalcTest, ZeroDecelFollowerInfiniteStoppingTime)
+TEST_F (HarmCalcTest, VeryLowDecelFollower)
 {
-  // Follower has zero deceleration → will eventually catch ahead
-  // a_follower = 0 → t_stop_follower = 1e9
-  double harm = m_app.CalculateHarm (1500, 20, 0, 1500, 10, 0, 50);
-  std::cout << harm << std::endl;
+  // Follower barely decelerating → will eventually catch ahead
+  double harm = m_app.CalculateHarm (1500, 20, 0.1, 1500, 10, 5, 50);
+  EXPECT_GT (harm, 0.0);
+}
+
+TEST_F (HarmCalcTest, ZeroDecelFollowerCoasts)
+{
+  // Follower has zero deceleration → coasts at constant speed into stopped vehicle.
+  // Phase 2 uses the linear fallback (a_follower=0 → A2=0).
+  // v_ahead=10, a_ahead=5 → ahead stops at t=2s
+  // At t=2: follower at v=20, gap ≈ 20m remaining
+  // Follower hits at dt = gap/v ≈ 1s after phase 2 starts → t_collision ≈ 3s
+  double harm = m_app.CalculateHarm (1500, 20, 0, 1500, 10, 5, 50);
   EXPECT_GT (harm, 0.0);
 }
 
@@ -618,13 +627,22 @@ TEST_F (HarmCalcTest, FollowerExactlyMatchesAheadNoCollision)
 
 TEST_F (HarmCalcTest, LargeMassDifference)
 {
-  // Heavy truck (10000 kg) vs light car (500 kg)
-  double harm = m_app.CalculateHarm (10000, 25, 5, 500, 10, 1, 10);
+  // Heavy truck (10000 kg) vs light car (500 kg), gap=0
+  double harm = m_app.CalculateHarm (10000, 25, 5, 500, 0, 0, 0);
   // m_reduced = 10000*500/10500 ≈ 476.19
-  // harm = 0.5 * 476.19 * 625 ≈ 148809.5
+  // harm = 0.5 * 476.19 * 25^2 ≈ 148809.5
   double m_reduced = (10000.0 * 500.0) / (10000.0 + 500.0);
   double expected = 0.5 * m_reduced * 25.0 * 25.0;
   EXPECT_NEAR (harm, expected, 1.0);
+}
+
+TEST_F (HarmCalcTest, GapZeroInstantCollision)
+{
+  // gap=0 with v_follower > v_ahead → instant collision at t=0
+  // The early-return path handles this directly.
+  // m_reduced = 750, v_rel = 10, harm = 0.5 * 750 * 100 = 37500
+  double harm = m_app.CalculateHarm (1500, 20, 5, 1500, 10, 5, 0);
+  EXPECT_NEAR (harm, 37500.0, 1.0);
 }
 
 TEST_F (HarmCalcTest, SmallGapSlightSpeedDifference)

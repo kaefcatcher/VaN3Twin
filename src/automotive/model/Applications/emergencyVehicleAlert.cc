@@ -1399,13 +1399,25 @@ emergencyVehicleAlert::CalculateHarm (double m_follower, double v_follower, doub
   if (v_follower <= v_ahead && a_follower >= a_ahead)
     return 0.0; // follower is slower and braking harder — no collision
 
+  // Handle gap=0 instant collision: vehicles already at same position
+  // and follower is faster → collision at t=0
+  if (gap <= 0 && v_follower > v_ahead)
+    {
+      double v_rel = v_follower - v_ahead;
+      double total_mass = m_follower + m_ahead;
+      if (total_mass <= 0)
+        return 0.0;
+      double m_reduced = (m_follower * m_ahead) / total_mass;
+      return 0.5 * m_reduced * v_rel * v_rel;
+    }
+
   // Time each vehicle needs to stop
   double t_stop_ahead = (a_ahead > 0) ? v_ahead / a_ahead : 1e9;
   double t_stop_follower = (a_follower > 0) ? v_follower / a_follower : 1e9;
 
-  // Distance each vehicle travels until stop
-  double d_ahead_stop = v_ahead * t_stop_ahead - 0.5 * a_ahead * t_stop_ahead * t_stop_ahead;
-  double d_follower_stop = v_follower * t_stop_follower - 0.5 * a_follower * t_stop_follower * t_stop_follower;
+  // Distance each vehicle travels until stop (using v^2/(2a) = 0.5*v*t_stop)
+  double d_ahead_stop = (a_ahead > 0) ? v_ahead * v_ahead / (2.0 * a_ahead) : 1e18;
+  double d_follower_stop = (a_follower > 0) ? v_follower * v_follower / (2.0 * a_follower) : 1e18;
 
   // If follower stops before closing the gap — no collision
   if (d_follower_stop <= gap + d_ahead_stop)
@@ -1416,7 +1428,7 @@ emergencyVehicleAlert::CalculateHarm (double m_follower, double v_follower, doub
   double t_phase1_end = std::min (t_stop_ahead, t_stop_follower);
 
   // gap(t) = gap + (v_ahead - v_follower)*t + 0.5*(a_follower - a_ahead)*t^2
-  // Solve gap(t) = 0: 0.5*(a_follower - a_ahead)*t^2 + (v_ahead - v_follower)*t + gap = 0
+  // Solve gap(t) = 0: A*t^2 + B*t + C = 0
   double A = 0.5 * (a_follower - a_ahead);
   double B = v_ahead - v_follower;
   double C = gap;
@@ -1431,16 +1443,16 @@ emergencyVehicleAlert::CalculateHarm (double m_follower, double v_follower, doub
           double sqrt_disc = std::sqrt (discriminant);
           double t1 = (-B - sqrt_disc) / (2 * A);
           double t2 = (-B + sqrt_disc) / (2 * A);
-          if (t1 > 0 && t1 <= t_phase1_end)
+          if (t1 > 1e-12 && t1 <= t_phase1_end)
             t_collision = t1;
-          else if (t2 > 0 && t2 <= t_phase1_end)
+          else if (t2 > 1e-12 && t2 <= t_phase1_end)
             t_collision = t2;
         }
     }
   else if (std::abs (B) > 1e-9)
     {
       double t = -C / B;
-      if (t > 0 && t <= t_phase1_end)
+      if (t > 1e-12 && t <= t_phase1_end)
         t_collision = t;
     }
 
@@ -1454,21 +1466,32 @@ emergencyVehicleAlert::CalculateHarm (double m_follower, double v_follower, doub
       if (v_follower_phase2 > 0 && gap_at_phase2_start > 0)
         {
           // gap(dt) = gap_at_phase2_start - v_follower_phase2 * dt + 0.5 * a_follower * dt^2
+          // Solve: A2*dt^2 + B2*dt + C2 = 0
           double A2 = 0.5 * a_follower;
           double B2 = -v_follower_phase2;
           double C2 = gap_at_phase2_start;
+          double dt_max = t_stop_follower - t_stop_ahead;
 
-          double disc2 = B2 * B2 - 4 * A2 * C2;
-          if (disc2 >= 0)
+          if (std::abs (A2) > 1e-9)
             {
-              double sqrt_disc2 = std::sqrt (disc2);
-              double dt1 = (-B2 - sqrt_disc2) / (2 * A2);
-              double dt2 = (-B2 + sqrt_disc2) / (2 * A2);
-              double dt_max = t_stop_follower - t_stop_ahead;
-              if (dt1 > 0 && dt1 <= dt_max)
-                t_collision = t_stop_ahead + dt1;
-              else if (dt2 > 0 && dt2 <= dt_max)
-                t_collision = t_stop_ahead + dt2;
+              double disc2 = B2 * B2 - 4 * A2 * C2;
+              if (disc2 >= 0)
+                {
+                  double sqrt_disc2 = std::sqrt (disc2);
+                  double dt1 = (-B2 - sqrt_disc2) / (2 * A2);
+                  double dt2 = (-B2 + sqrt_disc2) / (2 * A2);
+                  if (dt1 > 1e-12 && dt1 <= dt_max)
+                    t_collision = t_stop_ahead + dt1;
+                  else if (dt2 > 1e-12 && dt2 <= dt_max)
+                    t_collision = t_stop_ahead + dt2;
+                }
+            }
+          else if (std::abs (B2) > 1e-9)
+            {
+              // Linear case: a_follower ≈ 0, follower coasts at constant speed
+              double dt = -C2 / B2;
+              if (dt > 1e-12 && dt <= dt_max)
+                t_collision = t_stop_ahead + dt;
             }
         }
     }
@@ -1484,7 +1507,10 @@ emergencyVehicleAlert::CalculateHarm (double m_follower, double v_follower, doub
   if (v_rel <= 0)
     return 0.0;
 
-  double m_reduced = (m_follower * m_ahead) / (m_follower + m_ahead);
+  double total_mass = m_follower + m_ahead;
+  if (total_mass <= 0)
+    return 0.0;
+  double m_reduced = (m_follower * m_ahead) / total_mass;
   return 0.5 * m_reduced * v_rel * v_rel;
 }
 

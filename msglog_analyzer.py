@@ -110,6 +110,15 @@ class MsgLogAnalyzer:
             print("No loss_type data to plot")
 
         plt.show()
+    def get_plot_data(self):
+        df = self.df
+
+        return {
+            "status_counts": df["status"].value_counts(),
+            "harm": df["harm"],
+            "distance": df["distance"],
+            "loss_type": df["loss_type"].fillna("No loss").value_counts()
+        }
 
 if __name__ == "__main__":
     analyzer = MsgLogAnalyzer(path=".")

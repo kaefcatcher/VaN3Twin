@@ -3824,4 +3824,4 @@ target_include_directories(libautomotive PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/utils>
 )
 
-
+add_subdirectory(test/gtest)

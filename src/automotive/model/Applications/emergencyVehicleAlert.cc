@@ -26,6 +26,7 @@
 #include "ns3/socket.h"
 #include "ns3/network-module.h"
 #include "ns3/gn-utils.h"
+#include "ns3/harm-util.h"
 
 #define DEG_2_RAD(val) ((val) *M_PI / 180.0)
 
@@ -47,16 +48,8 @@ appUtil_haversineDist (double lat_a, double lon_a, double lat_b, double lon_b)
                          sin (DEG_2_RAD (lon_b - lon_a) / 2)));
 }
 
-// Pairwise HARM metric from Sidorenko et al. (VTC2023-Fall), formula (3):
-// H1 = m2/(m1+m2) * |delta_v|, where delta_v = v1 - v2
-double
-appUtil_pairwiseHarm (double m1, double v1, double m2, double v2)
-{
-  double totalMass = m1 + m2;
-  if (totalMass <= 0.0)
-    return 0.0;
-  return (m2 / totalMass) * std::abs (v1 - v2);
-}
+// appUtil_pairwiseHarm now lives in ns3/harm-util.h so both the
+// application and HarmLogger share one definition.
 
 // Function to compute the absolute difference between two angles (angles must be between -180 and 180)
 double

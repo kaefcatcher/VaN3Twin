@@ -38,6 +38,7 @@
 #include "ns3/sumo_xml_parser.h"
 #include "ns3/vehicle-visualizer-module.h"
 #include "ns3/MetricSupervisor.h"
+#include "ns3/HarmLogger.h"
 #include "json.hpp"
 #include <fstream>
 
@@ -130,6 +131,9 @@ main (int argc, char *argv[])
   bool sendDenm = true;
   std::string sigmaMode = "computed";   // "computed" | "fixed" | "scaled"
   double fixedSigma = 0.5;              // seconds (fixed) or multiplier (scaled)
+  std::string harmLogFile = "harm_log.csv";
+  double harmLogPeriodS = 0.1;
+  double harmLogRadiusM = 150.0;
 
   xmlDocPtr rou_xml_file;
   double m_baseline_prr = config.value("m_baseline_prr", 150.0);
@@ -195,6 +199,9 @@ main (int argc, char *argv[])
     cooperativeDetection = config.value("cooperative_detection", cooperativeDetection);
     sigmaMode         = config.value("sigma_mode", sigmaMode);
     fixedSigma        = config.value("fixed_sigma", fixedSigma);
+    harmLogFile       = config.value("harm_log_file", harmLogFile);
+    harmLogPeriodS    = config.value("harm_log_period_s", harmLogPeriodS);
+    harmLogRadiusM    = config.value("harm_log_radius_m", harmLogRadiusM);
 
     NS_LOG_INFO("Configuration loaded from JSON");
   }
@@ -799,6 +806,13 @@ main (int argc, char *argv[])
 
   /* start traci client with given function pointers */
   sumoClient->SumoSetup (setupNewWifiNode, shutdownWifiNode);
+
+  /* Time-sampled pairwise HARM log over SUMO ground truth. Independent of
+   * the V2X stack, so it isolates the algorithm's effect from PRR / loss.
+   */
+  Ptr<HarmLogger> harmLogger =
+      Create<HarmLogger> (sumoClient, harmLogFile, harmLogPeriodS, harmLogRadiusM);
+  harmLogger->Start ();
 
   /*** 8. Start Simulation ***/
   Simulator::Stop (Seconds(simTime));

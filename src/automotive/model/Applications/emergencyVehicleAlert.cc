@@ -1194,6 +1194,20 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
       m_update_denm_ev =
           Simulator::Schedule (MilliSeconds (500), &emergencyVehicleAlert::UpdateDenm, this,
                                actionid);
+
+      // Paper algorithm 1 step 3: vehicle 1 sets a1 = a_max immediately.
+      // Trigger explicit max-deceleration via SUMO so the originator's
+      // kinematics match the protocol regardless of what the car-follower
+      // model would have done naturally. Skip if cooperative algo is
+      // disabled — baseline runs should observe SUMO's native braking only.
+      // Also skip if cooperative state already applied a deceleration
+      // (would happen if HandleCooperativeDenm triggered this DENM as
+      // a relay).
+      if (m_cooperative_detection_enabled && !m_coopBraking.decisionMade)
+        {
+          double my_max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
+          ApplyCooperativeBraking (my_max_decel, false);
+        }
     }
 }
 
@@ -1835,6 +1849,17 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
                        << "s, suboptimal_a2=" << subopt_a2
                        << " m/s^2, waiting for rear DENM from station " << follower_station_id);
 
+      // Paper algorithm 2 step 3: vehicle 2 generates its own DENM to inform
+      // vehicle 3 that the cooperative protocol has begun. Use sub-cause 2
+      // to mark this as a cooperative relay (sub-cause 1 = primary brake).
+      // Skip if we already have an active DENM of our own — CheckForEvents
+      // will handle the lifecycle.
+      if (!m_is_event_active)
+        {
+          TriggerDenm (99, 2);
+          m_is_event_active = true;
+        }
+
       // Schedule decision timeout
       m_coopBraking.decisionTimerEvent = Simulator::Schedule (
           Seconds (sigma), &emergencyVehicleAlert::CooperativeDecisionTimeout, this);
@@ -1859,6 +1884,15 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
       LogCooperativeDecision ("rear", cause_code, senderStationId,
                               h_ahead, 0.0, h_ahead, my_max_decel, 0.0, false);
 
+      // Paper algorithm 3 step 4: vehicle 3 generates a DENM toward vehicle 2
+      // so the σ-budget loop can close. Sub-cause 2 marks it as a cooperative
+      // relay.
+      if (!m_is_event_active)
+        {
+          TriggerDenm (99, 2);
+          m_is_event_active = true;
+        }
+
       ApplyCooperativeBraking (my_max_decel, false);
       return;
     }
@@ -1881,6 +1915,12 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
 
       LogCooperativeDecision ("chain", cause_code, senderStationId,
                               h_ahead, 0.0, h_ahead, my_max_decel, 0.0, false);
+
+      if (!m_is_event_active)
+        {
+          TriggerDenm (99, 2);
+          m_is_event_active = true;
+        }
 
       ApplyCooperativeBraking (my_max_decel, false);
     }

@@ -26,5 +26,12 @@
   "send_denm": true,
   "cooperative_detection": true,
 
+  "sigma_mode": "computed",
+  "fixed_sigma": 0.5,
+
+  "harm_log_file": "harm_log.csv",
+  "harm_log_period_s": 0.1,
+  "harm_log_radius_m": 150.0,
+
   "csv_name_cumulative": "res"
 }

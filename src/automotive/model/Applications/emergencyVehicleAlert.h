@@ -178,9 +178,9 @@ private:
   bool m_send_denm;
 
   /* Event detection */
-  double m_prev_speed;
   bool m_is_event_active;
   DEN_ActionID_t m_active_action_id;
+  long m_active_detection_time_ms; // detection time of the current active event, preserved across updates
   double m_hard_brake_threshold;     // m/s², default -4.0
   double m_collision_risk_distance;  // m, default 20.0
   double m_event_check_interval;     // s, default 0.1

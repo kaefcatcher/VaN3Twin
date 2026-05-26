@@ -173,9 +173,9 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_distance_threshold = 75;
   m_heading_threshold = 45;
 
-  m_prev_speed = 0.0;
   m_is_event_active = false;
   m_active_action_id = {};
+  m_active_detection_time_ms = 0;
   m_hard_brake_threshold = -4.0;
   m_collision_risk_distance = 50.0;
   m_event_check_interval = 0.1;
@@ -366,8 +366,7 @@ emergencyVehicleAlert::StartApplication (void)
                           << "harm12,harm23,harmTotal,deceleration,sigma,isOptimal" << std::endl;
     }
 
-  /* Initialize previous speed and schedule periodic event detection */
-  m_prev_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+  /* Schedule periodic event detection */
   m_event_check_ev = Simulator::Schedule (Seconds (m_event_check_interval),
                                            &emergencyVehicleAlert::CheckForEvents, this);
 }
@@ -420,22 +419,19 @@ emergencyVehicleAlert::StopApplicationNow ()
 void
 emergencyVehicleAlert::CheckForEvents ()
 {
-  double current_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
-  double acceleration = (current_speed - m_prev_speed) / m_event_check_interval;
-  m_prev_speed = current_speed;
-
   if (m_send_denm)
     {
       if (!m_is_event_active)
         {
           if (DetectHardBraking ())
             {
+              double accel = m_client->TraCIAPI::vehicle.getAcceleration (m_id);
               // causeCode=99 (dangerousSituation), subCauseCode=1 (emergencyElectronicBrakeEngaged)
               TriggerDenm (99, 1);
               m_is_event_active = true;
 
               NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                               << " detected HARD BRAKING (accel=" << acceleration << " m/s^2)");
+                               << " detected HARD BRAKING (accel=" << accel << " m/s^2)");
             }
           else if (DetectCollisionRisk ())
             {
@@ -932,17 +928,18 @@ emergencyVehicleAlert::translateCPMV1data (asn1cpp::Seq<CPMV1> cpm, int objectIn
 void
 emergencyVehicleAlert::receiveDENM (denData denm, Address from)
 {
-  m_denm_received++;
-
   // Extract action ID for sender identification
   ActionID_t action_id = denm.getDenmActionID ();
   unsigned long sender_station_id = action_id.originatingStationId;
   long sequence_number = action_id.sequenceNumber;
 
-  // Don't process our own DENMs
+  // Don't count or process our own DENMs (they loop back through the
+  // multicast group).
   unsigned long my_station_id = std::stol (m_id.substr (3));
   if (sender_station_id == my_station_id)
     return;
+
+  m_denm_received++;
 
   // Extract position information (converted from 0.1 micro-degrees to degrees)
   long latitude_raw = denm.getDenmMgmtLatitude ();
@@ -1102,8 +1099,14 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
   libsumo::TraCIPosition pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
   pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (pos.x, pos.y);
 
+  // Detection time: the time at which the event was originally detected.
+  // Capture it once here and reuse it through UpdateDenm/TerminateDenm so the
+  // DENM keeps a stable detection-time anchor across its lifecycle, per
+  // ETSI EN 302 637-3.
+  m_active_detection_time_ms = compute_timestampIts (m_real_time);
+
   // Set management container mandatory fields with real coordinates (0.1 microdegrees)
-  data.setDenmMandatoryFields (compute_timestampIts (m_real_time),
+  data.setDenmMandatoryFields (m_active_detection_time_ms,
                                (long) (pos.y * DOT_ONE_MICRO),
                                (long) (pos.x * DOT_ONE_MICRO));
 
@@ -1207,9 +1210,11 @@ emergencyVehicleAlert::UpdateDenm (DEN_ActionID actionid)
   libsumo::TraCIPosition pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
   pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (pos.x, pos.y);
 
-  // Set management container mandatory fields with updated position
+  // Set management container mandatory fields with updated position.
+  // Detection time stays anchored to the original trigger time per
+  // ETSI EN 302 637-3; only position and reference time advance.
   data.setDenmMandatoryFields (actionid.originatingStationID, actionid.sequenceNumber,
-                               compute_timestampIts (m_real_time),
+                               m_active_detection_time_ms,
                                (double) (pos.y * DOT_ONE_MICRO),
                                (double) (pos.x * DOT_ONE_MICRO));
 
@@ -1293,7 +1298,7 @@ emergencyVehicleAlert::TerminateDenm ()
 
   data.setDenmMandatoryFields (m_active_action_id.originatingStationID,
                                m_active_action_id.sequenceNumber,
-                               compute_timestampIts (m_real_time),
+                               m_active_detection_time_ms,
                                (double) (pos.y * DOT_ONE_MICRO),
                                (double) (pos.x * DOT_ONE_MICRO));
 

@@ -120,7 +120,7 @@ emergencyVehicleAlert::GetTypeId (void)
           .AddAttribute (
               "HardBrakeThreshold",
               "Acceleration threshold (m/s^2) below which hard braking is detected",
-              DoubleValue (-1.0),
+              DoubleValue (-4.0),
               MakeDoubleAccessor (&emergencyVehicleAlert::m_hard_brake_threshold),
               MakeDoubleChecker<double> ())
           .AddAttribute (
@@ -177,7 +177,7 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_is_event_active = false;
   m_active_action_id = {};
   m_hard_brake_threshold = -4.0;
-  m_collision_risk_distance = 20.0;
+  m_collision_risk_distance = 50.0;
   m_event_check_interval = 0.1;
   m_vehicle_mass = 1500.0;
   m_ethical_braking_enabled = false;

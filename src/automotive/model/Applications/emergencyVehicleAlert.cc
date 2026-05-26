@@ -1053,6 +1053,22 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
           fwd_action_id.originatingStationID = sender_station_id;
           fwd_action_id.sequenceNumber = sequence_number;
 
+          // The forwarded packet's GBC header carries the GeoArea from
+          // DENBasicService::m_geoArea. Without this re-set, the forwarder
+          // would stamp the packet with its own last event area (or
+          // uninitialized bytes if it has never triggered a DENM), and every
+          // receiver would discard the packet at the isInsideGeoArea check.
+          // Anchor the area on the originator's event location with the
+          // cause-code-dependent radius used by TriggerDenm.
+          GeoArea_t fwdGeoArea;
+          fwdGeoArea.posLat = (long) (latitude_degrees * DOT_ONE_MICRO);
+          fwdGeoArea.posLong = (long) (longitude_degrees * DOT_ONE_MICRO);
+          fwdGeoArea.distA = (cause_code == 99) ? 200 : 300;
+          fwdGeoArea.distB = 0;
+          fwdGeoArea.angle = 0;
+          fwdGeoArea.shape = CIRCULAR;
+          m_denService.setGeoArea (fwdGeoArea);
+
           DENBasicService_error_t fwd_retval =
               m_denService.forwardDENM (denm, fwd_action_id);
 

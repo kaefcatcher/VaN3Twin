@@ -49,6 +49,16 @@ namespace ns3 {
 
     m_DENReceiveCallback = nullptr;
     m_DENReceiveCallbackExtended = nullptr;
+
+    // Default GeoArea: zero-radius circle. Forces the caller to setGeoArea
+    // before transmitting; without this, every transmit path reads stack
+    // garbage and every receiver drops via isInsideGeoArea.
+    m_geoArea.posLat = 0;
+    m_geoArea.posLong = 0;
+    m_geoArea.distA = 0;
+    m_geoArea.distB = 0;
+    m_geoArea.angle = 0;
+    m_geoArea.shape = CIRCULAR;
   }
 
   bool

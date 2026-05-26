@@ -75,6 +75,14 @@ public:
     double suboptimalDecel = 0.0;   // fallback deceleration
     bool decisionMade = false;
     bool rearDenmReceived = false;
+
+    /* Snapshot taken when the middle vehicle starts waiting; used by the
+       σ-timeout branch to re-run optimization with the freshest neighbor
+       data instead of falling back to the closed-form suboptimal value. */
+    unsigned long followerStationId = 0; // 0 = unknown
+    unsigned long leaderStationId = 0;   // 0 = unknown
+    double leaderAheadDecel = 0.0;       // m/s²
+    double leaderMass = 1500.0;          // kg
   };
 
   // void receiveCAM (CAM_t *cam, Address from);

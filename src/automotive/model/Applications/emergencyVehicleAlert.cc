@@ -1830,7 +1830,15 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
       m_coopBraking.decisionMade = false;
       m_coopBraking.rearDenmReceived = false;
 
+      // Snapshot leader / follower identity so the σ-timeout branch can
+      // re-run the optimization with up-to-date neighbor-table CAM data
+      // instead of using the closed-form suboptimal value.
+      m_coopBraking.followerStationId = follower_station_id;
+      m_coopBraking.leaderStationId = leader_station_id;
+      m_coopBraking.leaderMass = sender_mass;
+
       double a_ahead = sender_max_decel > 0 ? sender_max_decel : leader_max_decel;
+      m_coopBraking.leaderAheadDecel = a_ahead;
 
       // Calculate decision time budget sigma
       double sigma = CalculateDecisionBudget (my_speed, my_max_decel, leader_speed, a_ahead, gap_to_leader);
@@ -1932,24 +1940,29 @@ emergencyVehicleAlert::CooperativeDecisionTimeout ()
   if (m_coopBraking.decisionMade)
     return;
 
-  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                   << " COOPERATIVE: sigma timeout, applying suboptimal decel="
-                   << m_coopBraking.suboptimalDecel << " m/s^2");
+  // Paper algorithm 2 lines 11-12: σ expired without a fresh rear DENM,
+  // so recompute H_total = H_{1,2} + H_{2,3} using whatever V3 state we
+  // have from the last received CAM and pick the a2 that minimizes it.
+  // Falling back to the closed-form suboptimal (the previous behaviour)
+  // skips the optimization entirely and makes the σ knob meaningless.
 
-  // Get current kinematic state for harm calculation
   double my_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
-  auto leader = m_client->TraCIAPI::vehicle.getLeader (m_id, 200.0);
-  double leader_speed = 0;
-  double leader_max_decel = 7.5;
-  double gap_to_leader = 0;
-  double leader_mass = 1500.0;
+  double my_max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
 
+  // Leader info: prefer the snapshot taken when we entered the wait
+  // (sender_max_decel etc. came from the DENM alacarte). For position
+  // and current speed we re-query TraCI so the gap is fresh.
+  auto leader = m_client->TraCIAPI::vehicle.getLeader (m_id, 200.0);
+  double leader_speed = 0.0;
+  double gap_to_leader = 0.0;
+  double leader_max_decel = m_coopBraking.leaderAheadDecel > 0
+                                ? m_coopBraking.leaderAheadDecel : 7.5;
+  double leader_mass = m_coopBraking.leaderMass;
   if (!leader.first.empty () && leader.second >= 0)
     {
       try
         {
           leader_speed = m_client->TraCIAPI::vehicle.getSpeed (leader.first);
-          leader_max_decel = m_client->TraCIAPI::vehicle.getDecel (leader.first);
           gap_to_leader = leader.second;
         }
       catch (...)
@@ -1957,14 +1970,60 @@ emergencyVehicleAlert::CooperativeDecisionTimeout ()
         }
     }
 
-  double h12 = CalculateHarm (m_vehicle_mass, my_speed, m_coopBraking.suboptimalDecel,
-                               leader_mass, leader_speed, leader_max_decel, gap_to_leader);
+  // Follower info: use last neighbor-table entry (i.e. last CAM) for
+  // the station id we noted when entering the wait. If we lost track,
+  // assume no follower (gap=0, speed=0) — degenerates to the
+  // single-pair optimization.
+  double follower_speed = 0.0;
+  double follower_max_decel = 7.5;
+  double follower_mass = 1500.0;
+  double gap_to_follower = 0.0;
+  if (m_coopBraking.followerStationId != 0)
+    {
+      auto it = m_neighborTable.find (m_coopBraking.followerStationId);
+      if (it != m_neighborTable.end ())
+        {
+          follower_speed = it->second.speed;
 
+          libsumo::TraCIPosition my_pos =
+              m_client->TraCIAPI::vehicle.getPosition (m_id);
+          my_pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (my_pos.x, my_pos.y);
+          gap_to_follower = appUtil_haversineDist (my_pos.y, my_pos.x,
+                                                    it->second.latitude,
+                                                    it->second.longitude);
+        }
+    }
+
+  double optimal_a2 = CalculateOptimalDeceleration (
+      leader_speed, leader_max_decel, leader_mass,
+      my_speed, m_vehicle_mass, my_max_decel,
+      follower_speed, follower_max_decel, follower_mass,
+      gap_to_leader, gap_to_follower);
+
+  double h12 = CalculateHarm (m_vehicle_mass, my_speed, optimal_a2,
+                              leader_mass, leader_speed, leader_max_decel,
+                              gap_to_leader);
+  double h23 = (gap_to_follower > 0)
+                   ? CalculateHarm (follower_mass, follower_speed,
+                                    follower_max_decel, m_vehicle_mass,
+                                    my_speed, optimal_a2, gap_to_follower)
+                   : 0.0;
+
+  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                   << " COOPERATIVE: sigma timeout, optimization on last-CAM data"
+                   << " optimal_a2=" << optimal_a2
+                   << " H12=" << h12 << " H23=" << h23
+                   << " Htotal=" << h12 + h23);
+
+  // isOptimal=false here because the decision was made without a fresh
+  // rear DENM; the COOP CSV's isOptimal column still flags "rear DENM
+  // arrived in σ" semantics. The optimal_a2 magnitude itself reflects
+  // the joint H_total minimization.
   LogCooperativeDecision ("middle", -1, m_coopBraking.originatorStationId,
-                          h12, 0.0, h12, m_coopBraking.suboptimalDecel,
+                          h12, h23, h12 + h23, optimal_a2,
                           m_coopBraking.sigma, false);
 
-  ApplyCooperativeBraking (m_coopBraking.suboptimalDecel, false);
+  ApplyCooperativeBraking (optimal_a2, false);
 }
 
 void

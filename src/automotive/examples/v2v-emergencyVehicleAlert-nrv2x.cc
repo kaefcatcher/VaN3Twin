@@ -128,6 +128,8 @@ main (int argc, char *argv[])
   double penetrationRate = 1.0;
   bool cooperativeDetection = true;
   bool sendDenm = true;
+  std::string sigmaMode = "computed";   // "computed" | "fixed" | "scaled"
+  double fixedSigma = 0.5;              // seconds (fixed) or multiplier (scaled)
 
   xmlDocPtr rou_xml_file;
   double m_baseline_prr = config.value("m_baseline_prr", 150.0);
@@ -191,6 +193,8 @@ main (int argc, char *argv[])
     m_metric_sup      = config.value("metric_supervisor", m_metric_sup);
     sendDenm          = config.value("send_denm", sendDenm);
     cooperativeDetection = config.value("cooperative_detection", cooperativeDetection);
+    sigmaMode         = config.value("sigma_mode", sigmaMode);
+    fixedSigma        = config.value("fixed_sigma", fixedSigma);
 
     NS_LOG_INFO("Configuration loaded from JSON");
   }
@@ -222,6 +226,8 @@ main (int argc, char *argv[])
   cmd.AddValue ("penetrationRate", "Rate of vehicles equipped with wireless communication devices", penetrationRate);
   cmd.AddValue ("cooperative-detection", "Enable cooperative ethical braking algorithm", cooperativeDetection);
   cmd.AddValue ("send-denm", "Enable DENM event triggering; set false for a CAM-only baseline", sendDenm);
+  cmd.AddValue ("sigma-mode", "How V2 picks decision-time budget σ: 'computed', 'fixed', or 'scaled'", sigmaMode);
+  cmd.AddValue ("fixed-sigma", "σ override; meaning depends on sigma-mode (seconds or multiplier)", fixedSigma);
 
   cmd.AddValue ("simTime",
                 "Simulation time in seconds",
@@ -749,6 +755,8 @@ main (int argc, char *argv[])
     }
 
   EmergencyVehicleAlertHelper.SetAttribute ("SendDENM", BooleanValue (sendDenm));
+  EmergencyVehicleAlertHelper.SetAttribute ("SigmaMode", StringValue (sigmaMode));
+  EmergencyVehicleAlertHelper.SetAttribute ("FixedSigma", DoubleValue (fixedSigma));
 
   /* callback function for node creation */
   int i=0;

@@ -152,7 +152,22 @@ emergencyVehicleAlert::GetTypeId (void)
               "Enable cooperative ethical braking algorithm based on harm minimization",
               BooleanValue (false),
               MakeBooleanAccessor (&emergencyVehicleAlert::m_cooperative_detection_enabled),
-              MakeBooleanChecker ());
+              MakeBooleanChecker ())
+          .AddAttribute (
+              "SigmaMode",
+              "How V2's decision-time budget σ is determined: 'computed' (default — derive "
+              "from CalculateDecisionBudget so H_{1,2}=0), 'fixed' (use FixedSigma directly), "
+              "or 'scaled' (multiply the computed value by FixedSigma).",
+              StringValue ("computed"),
+              MakeStringAccessor (&emergencyVehicleAlert::m_sigma_mode),
+              MakeStringChecker ())
+          .AddAttribute (
+              "FixedSigma",
+              "Override or scale for σ. Interpreted per SigmaMode. Unit: seconds (mode=fixed) "
+              "or unitless multiplier (mode=scaled). Ignored when SigmaMode='computed'.",
+              DoubleValue (0.5),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_fixed_sigma),
+              MakeDoubleChecker<double> ());
   return tid;
 }
 
@@ -183,6 +198,8 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_ethical_braking_enabled = false;
   m_cooperative_detection_enabled = false;
   m_send_denm = true;
+  m_sigma_mode = "computed";
+  m_fixed_sigma = 0.5;
 }
 
 emergencyVehicleAlert::~emergencyVehicleAlert ()
@@ -1840,8 +1857,17 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
       double a_ahead = sender_max_decel > 0 ? sender_max_decel : leader_max_decel;
       m_coopBraking.leaderAheadDecel = a_ahead;
 
-      // Calculate decision time budget sigma
-      double sigma = CalculateDecisionBudget (my_speed, my_max_decel, leader_speed, a_ahead, gap_to_leader);
+      // Decision time budget σ. Default is the closed-form computed value
+      // (sweep-friendly override via attributes for parameter studies).
+      double sigma_computed =
+          CalculateDecisionBudget (my_speed, my_max_decel, leader_speed, a_ahead, gap_to_leader);
+      double sigma;
+      if (m_sigma_mode == "fixed")
+        sigma = std::max (0.0, m_fixed_sigma);
+      else if (m_sigma_mode == "scaled")
+        sigma = std::max (0.0, sigma_computed * m_fixed_sigma);
+      else
+        sigma = sigma_computed;
       m_coopBraking.sigma = sigma;
 
       // Calculate suboptimal deceleration (guarantees H_{self,ahead} = 0)

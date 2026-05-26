@@ -195,6 +195,8 @@ private:
   double m_vehicle_mass;             // kg, default 1500.0
   bool m_ethical_braking_enabled;
   bool m_cooperative_detection_enabled;
+  std::string m_sigma_mode;          // "computed" | "fixed" | "scaled"
+  double m_fixed_sigma;              // seconds (fixed) or multiplier (scaled)
 
   /* Cooperative braking state */
   CooperativeBrakingState m_coopBraking;

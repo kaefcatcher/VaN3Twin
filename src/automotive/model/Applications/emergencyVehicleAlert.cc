@@ -379,9 +379,18 @@ emergencyVehicleAlert::StartApplication (void)
   if (m_cooperative_detection_enabled && !m_csv_name.empty ())
     {
       m_csv_ofstream_coop.open (m_csv_name + "-" + m_id + "-COOP.csv", std::ofstream::trunc);
-      m_csv_ofstream_coop << "timestamp,vehicleId,role,causeCode,senderStationId,"
-                          << "harm12,harm23,harmTotal,deceleration,sigma,isOptimal" << std::endl;
+      m_csv_ofstream_coop
+          << "timestamp,vehicleId,role,causeCode,senderStationId,"
+          << "harm12,harm23,harmTotal,deceleration,sigma,rearDenmInSigma,"
+          << "sigmaMode,fixedSigmaAttr"
+          << std::endl;
     }
+
+  /* Cooperative summary counters */
+  m_coop_optimal_count = 0;
+  m_coop_suboptimal_count = 0;
+  m_coop_sigma_sum = 0.0;
+  m_coop_decel_sum = 0.0;
 
   /* Schedule periodic event detection */
   m_event_check_ev = Simulator::Schedule (Seconds (m_event_check_interval),
@@ -422,6 +431,22 @@ emergencyVehicleAlert::StopApplication ()
                 << ",CPM-SENT: " << cpm_sent << ",CPM-RECEIVED: " << m_cpm_received
                 << "DENM-RECEIVED: " << m_denm_received << ",DENM-SENT: " << m_denm_sent
                 << std::endl;
+
+      if (m_cooperative_detection_enabled)
+        {
+          uint64_t coop_total = m_coop_optimal_count + m_coop_suboptimal_count;
+          double avg_sigma = coop_total > 0 ? m_coop_sigma_sum / coop_total : 0.0;
+          double avg_decel = coop_total > 0 ? m_coop_decel_sum / coop_total : 0.0;
+          std::cout << "COOP-" << m_id
+                    << ",MODE:" << m_sigma_mode
+                    << ",FIXED-SIGMA:" << m_fixed_sigma
+                    << ",MIDDLE-DECISIONS:" << coop_total
+                    << ",REAR-IN-SIGMA:" << m_coop_optimal_count
+                    << ",SIGMA-TIMEOUT:" << m_coop_suboptimal_count
+                    << ",AVG-SIGMA:" << avg_sigma
+                    << ",AVG-DECEL:" << avg_decel
+                    << std::endl;
+        }
       m_already_print = true;
     }
 }
@@ -2082,8 +2107,21 @@ void
 emergencyVehicleAlert::LogCooperativeDecision (const std::string &role, long causeCode,
                                                unsigned long senderStationId, double harm12,
                                                double harm23, double harmTotal,
-                                               double deceleration, double sigma, bool isOptimal)
+                                               double deceleration, double sigma,
+                                               bool rearDenmInSigma)
 {
+  // Counters for the end-of-run summary. Count only "middle" decisions —
+  // chain / rear branches don't exercise the σ-budget loop.
+  if (role == "middle")
+    {
+      if (rearDenmInSigma)
+        m_coop_optimal_count++;
+      else
+        m_coop_suboptimal_count++;
+      m_coop_sigma_sum += sigma;
+      m_coop_decel_sum += deceleration;
+    }
+
   if (m_csv_ofstream_coop.is_open ())
     {
       m_csv_ofstream_coop << Simulator::Now ().GetSeconds () << ","
@@ -2096,7 +2134,9 @@ emergencyVehicleAlert::LogCooperativeDecision (const std::string &role, long cau
                           << harmTotal << ","
                           << deceleration << ","
                           << sigma << ","
-                          << (isOptimal ? 1 : 0) << std::endl;
+                          << (rearDenmInSigma ? 1 : 0) << ","
+                          << m_sigma_mode << ","
+                          << m_fixed_sigma << std::endl;
     }
 }
 

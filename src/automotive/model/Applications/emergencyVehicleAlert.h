@@ -140,7 +140,8 @@ private:
   void LogCooperativeDecision (const std::string &role, long causeCode,
                                unsigned long senderStationId, double harm12,
                                double harm23, double harmTotal,
-                               double deceleration, double sigma, bool isOptimal);
+                               double deceleration, double sigma,
+                               bool rearDenmInSigma);
 
   /* Unified message logging (MSGLOG CSV) */
   double CalculatePairwiseHarm (double m1, double v1, double m2, double v2);
@@ -201,6 +202,12 @@ private:
   /* Cooperative braking state */
   CooperativeBrakingState m_coopBraking;
   std::ofstream m_csv_ofstream_coop;
+
+  /* Cooperative decision summary (printed in StopApplication) */
+  uint64_t m_coop_optimal_count = 0;    // rear DENM arrived within σ
+  uint64_t m_coop_suboptimal_count = 0; // σ timed out
+  double m_coop_sigma_sum = 0.0;        // for averaging
+  double m_coop_decel_sum = 0.0;        // for averaging
 
   /* Neighbor tracking (filled from received CAMs) */
   std::unordered_map<unsigned long, NeighborState> m_neighborTable;

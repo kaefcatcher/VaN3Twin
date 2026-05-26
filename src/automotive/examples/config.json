@@ -23,5 +23,8 @@
   "m_baseline_prr": 150.0,
   "m_metric_sup": true,
 
+  "send_denm": true,
+  "cooperative_detection": true,
+
   "csv_name_cumulative": "res"
 }

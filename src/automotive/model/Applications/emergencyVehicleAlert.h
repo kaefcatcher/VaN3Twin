@@ -174,6 +174,7 @@ private:
 
   bool m_send_cam;
   bool m_send_cpm;
+  bool m_send_denm;
 
   /* Event detection */
   double m_prev_speed;

@@ -610,6 +610,10 @@ namespace ns3 {
 
     /* 12. Send actionID to the requesting ITS-S application. This is requested by the standard, but we are already reporting the actionID using &actionID */
 
+    NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] [DEN] station " << m_station_id
+                 << " TRIGGER actionId=(" << actionid.originatingStationID << ","
+                 << actionid.sequenceNumber << ") dataConfirm=" << dataConfirm);
+
     return DENM_NO_ERROR;
   }
 
@@ -710,6 +714,11 @@ namespace ns3 {
       }
 
     T_Repetition_Mutex.unlock();
+
+    NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] [DEN] station " << m_station_id
+                 << " UPDATE actionId=(" << actionid.originatingStationID << ","
+                 << actionid.sequenceNumber << ") dataConfirm=" << dataConfirm);
+
     return DENM_NO_ERROR;
   }
 
@@ -750,10 +759,9 @@ namespace ns3 {
 
     std::map<std::pair<unsigned long,long>, ITSSOriginatingTableEntry>::iterator entry_originating_table = m_originatingITSSTable.find(map_index);
     /* 2a. If actionID exists in the originating ITS-S message table and the entry state is ACTIVE, then set termination to isCancellation.*/
-    if (entry_originating_table != m_originatingITSSTable.end())
+    if (entry_originating_table == m_originatingITSSTable.end())
       {
-        T_Repetition_Mutex.unlock();
-        return DENM_UNKNOWN_ACTIONID_ORIGINATING;
+        /* actionID not in originating table — try receiving table below */
       }
     else if(entry_originating_table->second.getStatus()==ITSSOriginatingTableEntry::STATE_ACTIVE)
       {
@@ -776,10 +784,14 @@ namespace ns3 {
 
     /* 2b. If actionID exists in the receiving ITS-S message table and the entry state is ACTIVE, then set termination to isNegation.*/
     std::map<std::pair<unsigned long,long>, ITSSReceivingTableEntry>::iterator entry_receiving_table = m_receivingITSSTable.find(map_index);
-    if (entry_receiving_table != m_receivingITSSTable.end())
+    if (entry_receiving_table == m_receivingITSSTable.end())
       {
-        T_Repetition_Mutex.unlock();
-        return DENM_UNKNOWN_ACTIONID_RECEIVING;
+        /* actionID not in receiving table */
+        if (entry_originating_table == m_originatingITSSTable.end())
+          {
+            T_Repetition_Mutex.unlock();
+            return DENM_UNKNOWN_ACTIONID;
+          }
       }
     else if(entry_receiving_table->second.getStatus()==ITSSReceivingTableEntry::STATE_ACTIVE)
       {
@@ -828,9 +840,17 @@ namespace ns3 {
     std::map<std::pair<unsigned long,long>, std::tuple<Timer,Timer,Timer>>::iterator entry_timers_table = m_originatingTimerTable.find(map_index);
 
     /* 4b. Stop T_O_Validity, T_RepetitionDuration and T_Repetition (if they were started - this check is already performed by the setTimer* methods) */
-    std::get<V_O_VALIDITY_INDEX>(entry_timers_table->second).Cancel();
-    std::get<T_REPETITION_INDEX>(entry_timers_table->second).Cancel();
-    std::get<T_REPETITION_DURATION_INDEX>(entry_timers_table->second).Cancel();
+    if (entry_timers_table != m_originatingTimerTable.end())
+      {
+        std::get<V_O_VALIDITY_INDEX>(entry_timers_table->second).Cancel();
+        std::get<T_REPETITION_INDEX>(entry_timers_table->second).Cancel();
+        std::get<T_REPETITION_DURATION_INDEX>(entry_timers_table->second).Cancel();
+      }
+    else
+      {
+        /* termination=1 path: no prior originating-timer entry for this actionID; create one */
+        entry_timers_table = m_originatingTimerTable.emplace(map_index, std::tuple<Timer,Timer,Timer>()).first;
+      }
 
     /* 5. Construct DENM and pass it to the lower layers (now UDP, in the future BTP and GeoNetworking, then UDP) */
     /** Encoding **/
@@ -888,6 +908,9 @@ namespace ns3 {
 
     T_Repetition_Mutex.unlock();
 
+    NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] [DEN] station " << m_station_id
+                 << " TERMINATE actionId=(" << actionid.originatingStationID << ","
+                 << actionid.sequenceNumber << ")");
 
     return DENM_NO_ERROR;
   }
@@ -945,6 +968,10 @@ namespace ns3 {
     dataRequest.data = packet;
 
     m_btp->sendBTP(dataRequest, 0, MessageId_denm);
+
+    NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] [DEN] station " << m_station_id
+                 << " FORWARD actionId=(" << actionid.originatingStationID << ","
+                 << actionid.sequenceNumber << ")");
 
     /* No originating table entry or timers — this is a pure forward */
     return DENM_NO_ERROR;
@@ -1149,6 +1176,10 @@ namespace ns3 {
     auto alacarte = asn1cpp::getSeqOpt(decoded_denm->denm.alacarte,AlacarteContainer,&alacarte_ok);
     if(alacarte_ok)
         DENBasicService::fillDenDataAlacarte (alacarte, den_data);
+
+    NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] [DEN] station " << m_station_id
+                 << " RECEIVE actionId=(" << actionID.originatingStationID << ","
+                 << actionID.sequenceNumber << ")");
 
     if(m_DENReceiveCallback!=nullptr) {
       m_DENReceiveCallback(den_data,from);

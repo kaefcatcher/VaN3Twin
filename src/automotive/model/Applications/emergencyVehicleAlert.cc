@@ -113,6 +113,11 @@ emergencyVehicleAlert::GetTypeId (void)
               "SendCPM", "To enable/disable the transmission of CPM messages", BooleanValue (true),
               MakeBooleanAccessor (&emergencyVehicleAlert::m_send_cpm), MakeBooleanChecker ())
           .AddAttribute (
+              "SendDENM", "To enable/disable DENM event triggering (hard brake, collision risk). "
+                          "Set false to produce a CAM-only baseline for comparison.",
+              BooleanValue (true),
+              MakeBooleanAccessor (&emergencyVehicleAlert::m_send_denm), MakeBooleanChecker ())
+          .AddAttribute (
               "HardBrakeThreshold",
               "Acceleration threshold (m/s^2) below which hard braking is detected",
               DoubleValue (-1.0),
@@ -177,6 +182,7 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_vehicle_mass = 1500.0;
   m_ethical_braking_enabled = false;
   m_cooperative_detection_enabled = false;
+  m_send_denm = true;
 }
 
 emergencyVehicleAlert::~emergencyVehicleAlert ()
@@ -418,38 +424,41 @@ emergencyVehicleAlert::CheckForEvents ()
   double acceleration = (current_speed - m_prev_speed) / m_event_check_interval;
   m_prev_speed = current_speed;
 
-  if (!m_is_event_active)
+  if (m_send_denm)
     {
-      if (DetectHardBraking ())
+      if (!m_is_event_active)
         {
-          // causeCode=99 (dangerousSituation), subCauseCode=1 (emergencyElectronicBrakeEngaged)
-          TriggerDenm (99, 1);
-          m_is_event_active = true;
+          if (DetectHardBraking ())
+            {
+              // causeCode=99 (dangerousSituation), subCauseCode=1 (emergencyElectronicBrakeEngaged)
+              TriggerDenm (99, 1);
+              m_is_event_active = true;
 
-          NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                           << " detected HARD BRAKING (accel=" << acceleration << " m/s^2)");
+              NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                               << " detected HARD BRAKING (accel=" << acceleration << " m/s^2)");
+            }
+          else if (DetectCollisionRisk ())
+            {
+              // causeCode=97 (collisionRisk), subCauseCode=0 (unavailable)
+              TriggerDenm (97, 0);
+              m_is_event_active = true;
+
+              NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                               << " detected COLLISION RISK");
+            }
         }
-      else if (DetectCollisionRisk ())
+      else
         {
-          // causeCode=97 (collisionRisk), subCauseCode=0 (unavailable)
-          TriggerDenm (97, 0);
-          m_is_event_active = true;
+          // Check if event has ended: no longer braking hard and no collision risk
+          double accel = m_client->TraCIAPI::vehicle.getAcceleration (m_id);
+          if (accel > m_hard_brake_threshold && !DetectCollisionRisk ())
+            {
+              TerminateDenm ();
+              m_is_event_active = false;
 
-          NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                           << " detected COLLISION RISK");
-        }
-    }
-  else
-    {
-      // Check if event has ended: no longer braking hard and no collision risk
-      double accel = m_client->TraCIAPI::vehicle.getAcceleration (m_id);
-      if (accel > m_hard_brake_threshold && !DetectCollisionRisk ())
-        {
-          TerminateDenm ();
-          m_is_event_active = false;
-
-          NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                           << " event ended, DENM terminated");
+              NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                               << " event ended, DENM terminated");
+            }
         }
     }
 
@@ -1065,6 +1074,9 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
   DEN_ActionID_t actionid;
   DENBasicService_error_t trigger_retval;
 
+  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] Vehicle " << m_id
+               << " TRIGGER cause=" << causeCode << "/" << subCauseCode);
+
   // Get real coordinates from SUMO
   libsumo::TraCIPosition pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
   pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (pos.x, pos.y);
@@ -1163,6 +1175,9 @@ emergencyVehicleAlert::UpdateDenm (DEN_ActionID actionid)
   denData data;
   DENBasicService_error_t trigger_retval;
 
+  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] Vehicle " << m_id
+               << " UPDATE seq=" << actionid.sequenceNumber);
+
   // Get updated coordinates from SUMO
   libsumo::TraCIPosition pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
   pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (pos.x, pos.y);
@@ -1239,6 +1254,9 @@ emergencyVehicleAlert::TerminateDenm ()
 {
   if (!m_is_event_active)
     return;
+
+  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] Vehicle " << m_id
+               << " TERMINATE seq=" << m_active_action_id.sequenceNumber);
 
   Simulator::Cancel (m_update_denm_ev);
 

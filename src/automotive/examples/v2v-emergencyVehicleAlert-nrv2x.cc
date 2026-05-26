@@ -127,6 +127,7 @@ main (int argc, char *argv[])
 
   double penetrationRate = 1.0;
   bool cooperativeDetection = true;
+  bool sendDenm = true;
 
   xmlDocPtr rou_xml_file;
   double m_baseline_prr = config.value("m_baseline_prr", 150.0);
@@ -188,6 +189,8 @@ main (int argc, char *argv[])
     slProbResourceKeep= config.value("probResourceKeep", slProbResourceKeep);
     m_baseline_prr    = config.value("baseline", m_baseline_prr);
     m_metric_sup      = config.value("metric_supervisor", m_metric_sup);
+    sendDenm          = config.value("send_denm", sendDenm);
+    cooperativeDetection = config.value("cooperative_detection", cooperativeDetection);
 
     NS_LOG_INFO("Configuration loaded from JSON");
   }
@@ -218,6 +221,7 @@ main (int argc, char *argv[])
   cmd.AddValue ("met-sup","Use the Metric supervisor or not",m_metric_sup);
   cmd.AddValue ("penetrationRate", "Rate of vehicles equipped with wireless communication devices", penetrationRate);
   cmd.AddValue ("cooperative-detection", "Enable cooperative ethical braking algorithm", cooperativeDetection);
+  cmd.AddValue ("send-denm", "Enable DENM event triggering; set false for a CAM-only baseline", sendDenm);
 
   cmd.AddValue ("simTime",
                 "Simulation time in seconds",
@@ -302,6 +306,7 @@ main (int argc, char *argv[])
       LogComponentEnable ("v2v-nrv2x", LOG_LEVEL_INFO);
       LogComponentEnable ("CABasicService", LOG_LEVEL_INFO);
       LogComponentEnable ("DENBasicService", LOG_LEVEL_INFO);
+      LogComponentEnable ("emergencyVehicleAlert", LOG_LEVEL_INFO);
     }
 
   /*
@@ -742,6 +747,8 @@ main (int argc, char *argv[])
       EmergencyVehicleAlertHelper.SetAttribute ("CooperativeDetection", BooleanValue (true));
       EmergencyVehicleAlertHelper.SetAttribute ("EthicalBraking", BooleanValue (true));
     }
+
+  EmergencyVehicleAlertHelper.SetAttribute ("SendDENM", BooleanValue (sendDenm));
 
   /* callback function for node creation */
   int i=0;

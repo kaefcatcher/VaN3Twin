@@ -1089,8 +1089,12 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
   // Set validity duration (30 seconds for safety events)
   data.setValidityDuration (30);
 
-  // Set repetition parameters (500ms interval, 30s duration)
-  data.setDenmRepetition (30000, 500);
+  // Repetition is driven by the application's UpdateDenm scheduler. Leaving
+  // service-side repetition on (setDenmRepetition(duration, interval)) makes
+  // every interval fire twice — once from T_RepetitionStop in DENBasicService,
+  // once from appDENM_update inside UpdateDenm — because both rearm the same
+  // timer. Explicitly disable service-side repetition here.
+  data.setDenmRepetition (0, 0);
 
   // Set situation container
   denData::denDataSituation situation;
@@ -1189,7 +1193,8 @@ emergencyVehicleAlert::UpdateDenm (DEN_ActionID actionid)
                                (double) (pos.x * DOT_ONE_MICRO));
 
   data.setValidityDuration (30);
-  data.setDenmRepetition (30000, 500);
+  // App-driven repetition: see TriggerDenm comment.
+  data.setDenmRepetition (0, 0);
 
   // Update speed
   double speed_ms = m_client->TraCIAPI::vehicle.getSpeed (m_id);

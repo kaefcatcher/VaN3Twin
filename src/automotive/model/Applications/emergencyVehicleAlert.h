@@ -51,6 +51,7 @@ public:
     double eventLat;  // degrees
     double eventLon;  // degrees
     uint64_t receiveTime_us;
+    uint64_t lastForwardTime_us;
     int forwardCount;
   };
 

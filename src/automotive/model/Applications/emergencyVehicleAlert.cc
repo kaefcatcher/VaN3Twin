@@ -1029,6 +1029,7 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
       entry.eventLat = latitude_degrees;
       entry.eventLon = longitude_degrees;
       entry.receiveTime_us = Simulator::Now ().GetMicroSeconds ();
+      entry.lastForwardTime_us = 0;
       entry.forwardCount = 0;
       m_forwardingTable[fw_key] = entry;
       fw_it = m_forwardingTable.find (fw_key);
@@ -1044,10 +1045,13 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
   // Forward if within 500m relevance area and forward count not exceeded
   if (dist_to_event < 500.0 && fw_it->second.forwardCount < MAX_FORWARD_COUNT)
     {
-      // Check minimum forwarding interval
+      // Gate on time since the *last forward*, not since the last receive.
+      // The previous code reset receiveTime_us on every receive, so this
+      // condition was always 0 after the first forward and the count never
+      // climbed past 1 even when MAX_FORWARD_COUNT allowed more.
       uint64_t now_us = Simulator::Now ().GetMicroSeconds ();
-      if (fw_it->second.forwardCount == 0 ||
-          (now_us - fw_it->second.receiveTime_us) >= MIN_FORWARD_INTERVAL_US)
+      if (fw_it->second.lastForwardTime_us == 0 ||
+          (now_us - fw_it->second.lastForwardTime_us) >= MIN_FORWARD_INTERVAL_US)
         {
           DEN_ActionID_t fwd_action_id;
           fwd_action_id.originatingStationID = sender_station_id;
@@ -1075,6 +1079,7 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
           if (fwd_retval == DENM_NO_ERROR)
             {
               fw_it->second.forwardCount++;
+              fw_it->second.lastForwardTime_us = now_us;
               NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
                                << " forwarded DENM from station " << sender_station_id
                                << " (forward #" << fw_it->second.forwardCount << ")");

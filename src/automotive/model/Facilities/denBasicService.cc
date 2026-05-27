@@ -1034,11 +1034,18 @@ namespace ns3 {
     std::pair <unsigned long, long> map_index;
 
     packet = dataIndication.data;
+    if (rxTrace) std::cerr << "[RX] packet=" << (packet ? "ok" : "NULL") << std::endl;
 
-    uint8_t *buffer; //= new uint8_t[packet->GetSize ()];
-    buffer=(uint8_t *)malloc((packet->GetSize ())*sizeof(uint8_t));
-    packet->CopyData (buffer, packet->GetSize ());
-    std::string packetContent((char *)buffer,(int) dataIndication.data->GetSize ());
+    uint32_t pktSize = packet ? packet->GetSize () : 0;
+    if (rxTrace) std::cerr << "[RX] pktSize=" << pktSize << std::endl;
+
+    uint8_t *buffer;
+    buffer=(uint8_t *)malloc(pktSize*sizeof(uint8_t));
+    if (rxTrace) std::cerr << "[RX] buffer=" << (buffer ? "ok" : "NULL") << std::endl;
+
+    if (pktSize > 0) packet->CopyData (buffer, pktSize);
+    std::string packetContent((char *)buffer,(int) pktSize);
+    if (rxTrace) std::cerr << "[RX] packetContent ready, size=" << packetContent.size () << std::endl;
 
     RssiTag rssi;
     bool rssi_result = dataIndication.data->PeekPacketTag(rssi);
@@ -1057,6 +1064,7 @@ namespace ns3 {
 
     TimestampTag timestamp;
     dataIndication.data->PeekPacketTag(timestamp);
+    if (rxTrace) std::cerr << "[RX] all tags peeked" << std::endl;
 
     if(!snr_result)
       {
@@ -1080,6 +1088,7 @@ namespace ns3 {
       }
 
     SetSignalInfo(timestamp.Get(), size.Get(), rssi.Get(), snr.Get(), sinr.Get(), rsrp.Get());
+    if (rxTrace) std::cerr << "[RX] SetSignalInfo done" << std::endl;
 
     if(!CheckMainAttributes ())
       {
@@ -1087,11 +1096,13 @@ namespace ns3 {
         free(buffer);
         return;
       }
+    if (rxTrace) std::cerr << "[RX] CheckMainAttributes ok" << std::endl;
 
     /* Try to check if the received packet is really a DENM */
-    if (buffer[1]!=FIX_DENMID)
+    if (pktSize < 2 || buffer[1]!=FIX_DENMID)
       {
-        NS_LOG_ERROR("Warning: received a message which has messageID '"<<buffer[1]<<"' but '1' was expected.");
+        NS_LOG_ERROR("Warning: received a message which has messageID '"<<(pktSize >= 2 ? (int)buffer[1] : -1)<<"' but '1' was expected.");
+        if (rxTrace) std::cerr << "[RX] not a DENM (size=" << pktSize << ")" << std::endl;
         free(buffer);
         return;
       }

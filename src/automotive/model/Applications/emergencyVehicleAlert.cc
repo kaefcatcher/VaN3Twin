@@ -1164,8 +1164,16 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
     }
 
   // --- Cooperative Ethical Braking Algorithm ---
-  if (m_cooperative_detection_enabled && max_deceleration > 0.0 &&
-      (cause_code == 99 || cause_code == 97))
+  // Trigger on any cause that indicates a braking-related event. The
+  // ETSI alacarte ethical extensions (max_deceleration etc.) are
+  // optional: when present, HandleCooperativeDenm uses them; when
+  // absent, it falls back to TraCI-derived defaults for the sender's
+  // deceleration and mass. Gating cooperative on
+  // max_deceleration > 0 used to silently skip the algorithm whenever
+  // include_ethical_alacarte was off, which is the default.
+  if (m_cooperative_detection_enabled &&
+      (cause_code == 99 || cause_code == 97 || cause_code == 26 ||
+       cause_code == 94))
     {
       HandleCooperativeDenm (denm, sender_station_id);
     }
@@ -1907,9 +1915,13 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
   double my_max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
   double my_heading = m_client->TraCIAPI::vehicle.getAngle (m_id);
 
-  // Extract sender's data from DENM alacarte
-  double sender_max_decel = 0.0;
-  double sender_mass = 1500.0;
+  // Extract sender's data from DENM alacarte. The ethical-extension
+  // fields (maxDeceleration, vehicleMass) are not part of the
+  // baseline ETSI alacarte and are gated behind include_ethical_alacarte
+  // on the sender; when off, we use defensible defaults so the algo
+  // still runs.
+  double sender_max_decel = 0.0;     // 0 ⇒ "unknown"; replaced below
+  double sender_mass = m_vehicle_mass;
   if (denm.isDenmAlacarteDataSet ())
     {
       auto alacarte = denm.getDenmAlacarteData_asn_types ().getData ();
@@ -1917,6 +1929,13 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
         sender_max_decel = alacarte.maxDeceleration.getData ();
       if (alacarte.vehicleMass.isAvailable ())
         sender_mass = static_cast<double> (alacarte.vehicleMass.getData ());
+    }
+  if (sender_max_decel <= 0.0)
+    {
+      // No ethical alacarte: assume sender's max deceleration equals our
+      // own. Reasonable for a fleet of similar vehicles; for mixed
+      // fleets the sender would carry its mass+decel in the alacarte.
+      sender_max_decel = my_max_decel;
     }
 
   // Get sender speed from DENM location container

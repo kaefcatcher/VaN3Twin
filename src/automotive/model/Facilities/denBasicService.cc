@@ -1355,7 +1355,7 @@ namespace ns3 {
   }
 
   void
-  DENBasicService::fillDenDataHeader(asn1cpp::Seq<ItsPduHeader>denm_header, denData &denm_data)
+  DENBasicService::fillDenDataHeader(const asn1cpp::Seq<ItsPduHeader> &denm_header, denData &denm_data)
   {
       denm_data.setDenmHeader (asn1cpp::getField(denm_header->messageId,long),
                                asn1cpp::getField(denm_header->protocolVersion,long),
@@ -1363,7 +1363,7 @@ namespace ns3 {
   }
 
   void
-  DENBasicService::fillDenDataManagement(asn1cpp::Seq<ManagementContainer> denm_mgmt_container, denData &denm_data)
+  DENBasicService::fillDenDataManagement(const asn1cpp::Seq<ManagementContainer> &denm_mgmt_container, denData &denm_data)
   {
     denData::denDataManagement management;
     bool ok;
@@ -1404,7 +1404,7 @@ namespace ns3 {
   }
 
   void
-  DENBasicService::fillDenDataSituation(asn1cpp::Seq<SituationContainer> denm_situation_container, denData &denm_data)
+  DENBasicService::fillDenDataSituation(const asn1cpp::Seq<SituationContainer> &denm_situation_container, denData &denm_data)
   {
     denData::denDataSituation situation;
     bool ok;
@@ -1450,7 +1450,7 @@ namespace ns3 {
   }
 
   void
-  DENBasicService::fillDenDataLocation(asn1cpp::Seq<LocationContainer> denm_location_container, denData &denm_data)
+  DENBasicService::fillDenDataLocation(const asn1cpp::Seq<LocationContainer> &denm_location_container, denData &denm_data)
   {
     denData::denDataLocation location;
     bool ok;
@@ -1514,7 +1514,7 @@ namespace ns3 {
   }
 
   void
-  DENBasicService::fillDenDataAlacarte(asn1cpp::Seq<AlacarteContainer> denm_alacarte_container, denData &denm_data)
+  DENBasicService::fillDenDataAlacarte(const asn1cpp::Seq<AlacarteContainer> &denm_alacarte_container, denData &denm_data)
   {
     std::cerr << "[ALA] enter" << std::endl;
     denData::denDataAlacarte alacarte;

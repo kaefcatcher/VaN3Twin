@@ -274,31 +274,31 @@ namespace ns3 {
      * @param denm_header  The ASN.1 DENM header to be filled
      * @param denm_data  The data to be included in the DENM message
      */
-    void fillDenDataHeader(asn1cpp::Seq<ItsPduHeader> denm_header, denData &denm_data);
+    void fillDenDataHeader(const asn1cpp::Seq<ItsPduHeader> &denm_header, denData &denm_data);
     /**
      * @brief Fill the DENM message management container
      * @param denm_mgmt_container  The ASN.1 DENM management container to be filled
      * @param denm_data  The data to be included in the DENM message
      */
-    void fillDenDataManagement(asn1cpp::Seq<ManagementContainer> denm_mgmt_container, denData &denm_data);
+    void fillDenDataManagement(const asn1cpp::Seq<ManagementContainer> &denm_mgmt_container, denData &denm_data);
     /**
      * @brief Fill the DENM message situation container
      * @param denm_situation_container  The ASN.1 DENM situation container to be filled
      * @param denm_data  The data to be included in the DENM message
      */
-    void fillDenDataSituation(asn1cpp::Seq<SituationContainer> denm_situation_container, denData &denm_data);
+    void fillDenDataSituation(const asn1cpp::Seq<SituationContainer> &denm_situation_container, denData &denm_data);
     /**
      * @brief Fill the DENM message location container
      * @param denm_location_container  The ASN.1 DENM location container to be filled
      * @param denm_data  The data to be included in the DENM message
      */
-    void fillDenDataLocation(asn1cpp::Seq<LocationContainer> denm_location_container, denData &denm_data);
+    void fillDenDataLocation(const asn1cpp::Seq<LocationContainer> &denm_location_container, denData &denm_data);
     /**
      * @brief Fill the DENM message alacarte container
      * @param denm_alacarte_container  The ASN.1 DENM alacarte container to be filled
      * @param denm_data  The data to be included in the DENM message
      */
-    void fillDenDataAlacarte(asn1cpp::Seq<AlacarteContainer> denm_alacarte_container, denData &denm_data);
+    void fillDenDataAlacarte(const asn1cpp::Seq<AlacarteContainer> &denm_alacarte_container, denData &denm_data);
 
     /*
     * Mutex to protect m_originatingITSSTable when appDENM_update() and the callback for the expiration of the T_Repetion timer may try to

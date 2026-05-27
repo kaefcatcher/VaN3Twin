@@ -19,10 +19,17 @@ set -euo pipefail
 EXAMPLE="v2v-emergencyVehicleAlert-nrv2x"
 SIGMAS=("0.0" "0.1" "0.2" "0.5" "1.0" "2.0")
 
+# Every run uses the same forced brake event so HARM totals are comparable
+# across runs. Override config.json values that might otherwise drift.
+COMMON="--send-denm=true \
+  --force-brake-time=15.0 \
+  --force-brake-vehicle=veh0 \
+  --force-brake-duration=1.0 \
+  --force-brake-target-speed=0.0"
+
 # Baseline: DENMs sent, algorithm OFF. Establishes the no-algo reference.
 echo "==> Baseline run (cooperative_detection=false)"
-./ns3 run "${EXAMPLE} \
-  --send-denm=true \
+./ns3 run "${EXAMPLE} ${COMMON} \
   --cooperative-detection=false \
   --csv-log=baseline \
   --harm-log-file=harm_log_baseline.csv"
@@ -30,8 +37,7 @@ echo "==> Baseline run (cooperative_detection=false)"
 # σ sweep: algorithm ON, σ chosen by SigmaMode=fixed at each value.
 for sigma in "${SIGMAS[@]}"; do
   echo "==> Algorithm run, σ=${sigma}"
-  ./ns3 run "${EXAMPLE} \
-    --send-denm=true \
+  ./ns3 run "${EXAMPLE} ${COMMON} \
     --cooperative-detection=true \
     --sigma-mode=fixed \
     --fixed-sigma=${sigma} \
@@ -41,8 +47,7 @@ done
 
 # Bonus: also run with the computed (closed-form) σ for reference.
 echo "==> Algorithm run, σ=computed"
-./ns3 run "${EXAMPLE} \
-  --send-denm=true \
+./ns3 run "${EXAMPLE} ${COMMON} \
   --cooperative-detection=true \
   --sigma-mode=computed \
   --csv-log=algo_sigma_computed \

@@ -135,6 +135,15 @@ main (int argc, char *argv[])
   double harmLogPeriodS = 0.1;
   double harmLogRadiusM = 150.0;
 
+  // Forced emergency brake of a designated vehicle, used to guarantee a
+  // hard-brake event in scenarios where SUMO's planned <stop> would
+  // otherwise decelerate too smoothly to fire the HardBrakeThreshold gate.
+  // forceBrakeTime <= 0 disables the feature.
+  double forceBrakeTime = 15.0;            // seconds of simulation time
+  std::string forceBrakeVehicle = "veh0";   // SUMO vehicle id to brake
+  double forceBrakeDuration = 1.0;          // seconds to reach speed 0
+  double forceBrakeTargetSpeed = 0.0;       // m/s
+
   xmlDocPtr rou_xml_file;
   double m_baseline_prr = config.value("m_baseline_prr", 150.0);
   bool m_metric_sup = config.value("m_metric_sup", false);
@@ -203,6 +212,11 @@ main (int argc, char *argv[])
     harmLogPeriodS    = config.value("harm_log_period_s", harmLogPeriodS);
     harmLogRadiusM    = config.value("harm_log_radius_m", harmLogRadiusM);
 
+    forceBrakeTime         = config.value("force_brake_time", forceBrakeTime);
+    forceBrakeVehicle      = config.value("force_brake_vehicle", forceBrakeVehicle);
+    forceBrakeDuration     = config.value("force_brake_duration", forceBrakeDuration);
+    forceBrakeTargetSpeed  = config.value("force_brake_target_speed", forceBrakeTargetSpeed);
+
     NS_LOG_INFO("Configuration loaded from JSON");
   }
   catch (const std::exception& e)
@@ -238,6 +252,10 @@ main (int argc, char *argv[])
   cmd.AddValue ("harm-log-file", "Output CSV path for the time-sampled pairwise HARM log", harmLogFile);
   cmd.AddValue ("harm-log-period-s", "Sampling period (s) of the HARM log", harmLogPeriodS);
   cmd.AddValue ("harm-log-radius-m", "Pairing radius (m) for the HARM log", harmLogRadiusM);
+  cmd.AddValue ("force-brake-time", "Simulation time (s) at which to force a TraCI brake. <= 0 disables.", forceBrakeTime);
+  cmd.AddValue ("force-brake-vehicle", "SUMO vehicle id to brake", forceBrakeVehicle);
+  cmd.AddValue ("force-brake-duration", "Duration (s) over which the forced brake completes", forceBrakeDuration);
+  cmd.AddValue ("force-brake-target-speed", "Target speed (m/s) of the forced brake (0 = full stop)", forceBrakeTargetSpeed);
 
   cmd.AddValue ("simTime",
                 "Simulation time in seconds",
@@ -816,6 +834,36 @@ main (int argc, char *argv[])
   Ptr<HarmLogger> harmLogger =
       Create<HarmLogger> (sumoClient, harmLogFile, harmLogPeriodS, harmLogRadiusM);
   harmLogger->Start ();
+
+  /* Forced emergency brake. SUMO's planned <stop> tends to use a smooth
+   * deceleration profile that doesn't reliably cross the -4 m/s²
+   * HardBrakeThreshold the application uses. Schedule an explicit
+   * slowDown via TraCI so the brake event is well-defined and the test
+   * is repeatable.
+   *
+   * Set force_brake_time to 0 (or negative) to disable. Useful when
+   * sweeping with a SUMO scenario that already produces the event.
+   */
+  if (forceBrakeTime > 0.0)
+    {
+      Simulator::Schedule (
+          Seconds (forceBrakeTime),
+          [sumoClient, forceBrakeVehicle, forceBrakeTargetSpeed, forceBrakeDuration] () {
+            try
+              {
+                NS_LOG_UNCOND ("[" << Simulator::Now ().GetSeconds ()
+                               << "s] FORCED BRAKE: " << forceBrakeVehicle
+                               << " slowDown(target=" << forceBrakeTargetSpeed
+                               << " m/s, duration=" << forceBrakeDuration << "s)");
+                sumoClient->TraCIAPI::vehicle.slowDown (
+                    forceBrakeVehicle, forceBrakeTargetSpeed, forceBrakeDuration);
+              }
+            catch (const std::exception &e)
+              {
+                std::cerr << "FORCED BRAKE failed: " << e.what () << std::endl;
+              }
+          });
+    }
 
   /*** 8. Start Simulation ***/
   Simulator::Stop (Seconds(simTime));

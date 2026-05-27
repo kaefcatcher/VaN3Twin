@@ -454,6 +454,45 @@ emergencyVehicleAlert::StopApplicationNow ()
 void
 emergencyVehicleAlert::CheckForEvents ()
 {
+  // Diagnostic: every 10th tick (≈1 s at the 100 ms interval) print our
+  // detection-state snapshot so a "no DENMs" run reveals which gate
+  // never fires. Cheap, only on when emergencyVehicleAlert log is at
+  // LOG_INFO.
+  static thread_local uint32_t s_tick = 0;
+  if ((++s_tick % 10) == 0)
+    {
+      double accel = 0.0, my_speed = 0.0;
+      try
+        {
+          accel = m_client->TraCIAPI::vehicle.getAcceleration (m_id);
+          my_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+        }
+      catch (...)
+        {
+        }
+      double gap = -1.0;
+      double leader_speed = -1.0;
+      auto leader = m_client->TraCIAPI::vehicle.getLeader (m_id, 100.0);
+      if (!leader.first.empty () && leader.second >= 0)
+        {
+          gap = leader.second;
+          try
+            {
+              leader_speed = m_client->TraCIAPI::vehicle.getSpeed (leader.first);
+            }
+          catch (...)
+            {
+            }
+        }
+      NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] " << m_id
+                   << " STATE active=" << m_is_event_active
+                   << " v=" << my_speed
+                   << " a=" << accel << "(thr=" << m_hard_brake_threshold << ")"
+                   << " gap=" << gap << "(thr=" << m_collision_risk_distance << ")"
+                   << " vlead=" << leader_speed
+                   << " closing=" << ((leader_speed >= 0) ? my_speed - leader_speed : -1.0));
+    }
+
   if (m_send_denm)
     {
       if (!m_is_event_active)

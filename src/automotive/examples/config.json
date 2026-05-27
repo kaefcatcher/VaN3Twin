@@ -33,5 +33,10 @@
   "harm_log_period_s": 0.1,
   "harm_log_radius_m": 150.0,
 
+  "force_brake_time": 15.0,
+  "force_brake_vehicle": "veh0",
+  "force_brake_duration": 1.0,
+  "force_brake_target_speed": 0.0,
+
   "csv_name_cumulative": "res"
 }

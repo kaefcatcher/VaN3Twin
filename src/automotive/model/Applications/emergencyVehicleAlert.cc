@@ -1422,31 +1422,40 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
                 << "," << actionid.sequenceNumber << ") cause=" << causeCode
                 << "/" << subCauseCode << std::endl;
 
-      // Change vehicle color to red to indicate event
-      libsumo::TraCIColor red;
-      red.r = 255;
-      red.g = 0;
-      red.b = 0;
-      red.a = 255;
-      m_client->TraCIAPI::vehicle.setColor (m_id, red);
-
-      // Schedule periodic updates
-      m_update_denm_ev =
-          Simulator::Schedule (MilliSeconds (500), &emergencyVehicleAlert::UpdateDenm, this,
-                               actionid);
-
-      // Paper algorithm 1 step 3: vehicle 1 sets a1 = a_max immediately.
-      // Trigger explicit max-deceleration via SUMO so the originator's
-      // kinematics match the protocol regardless of what the car-follower
-      // model would have done naturally. Skip if cooperative algo is
-      // disabled — baseline runs should observe SUMO's native braking only.
-      // Also skip if cooperative state already applied a deceleration
-      // (would happen if HandleCooperativeDenm triggered this DENM as
-      // a relay).
-      if (m_cooperative_detection_enabled && !m_coopBraking.decisionMade)
+      // Per-step traces so a post-TRIGGER SIGSEGV localises to one line.
+      try
         {
-          double my_max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
-          ApplyCooperativeBraking (my_max_decel, false);
+          std::cout << "[EVA-POST 1] setColor" << std::endl;
+          libsumo::TraCIColor red;
+          red.r = 255;
+          red.g = 0;
+          red.b = 0;
+          red.a = 255;
+          m_client->TraCIAPI::vehicle.setColor (m_id, red);
+
+          std::cout << "[EVA-POST 2] schedule UpdateDenm" << std::endl;
+          m_update_denm_ev =
+              Simulator::Schedule (MilliSeconds (500),
+                                   &emergencyVehicleAlert::UpdateDenm, this, actionid);
+
+          // V1's "a1 = a_max" is already enforced by the force_brake scheduler
+          // in the NR scenario (which calls slowDown on veh0 at force_brake_time).
+          // Calling slowDown a second time here from inside TriggerDenm — while
+          // the first slowDown is still resolving in SUMO — stacks commands on
+          // the same vehicle and desyncs TraCI. Skip this path on the
+          // originator. The middle / rear branches of HandleCooperativeDenm
+          // still call ApplyCooperativeBraking on themselves, where it is the
+          // only brake source for that vehicle and therefore safe.
+          std::cout << "[EVA-POST 3] done (V1 brake left to force-brake scheduler)"
+                    << std::endl;
+        }
+      catch (const std::exception &e)
+        {
+          std::cout << "[EVA-POST EXCEPTION] " << e.what () << std::endl;
+        }
+      catch (...)
+        {
+          std::cout << "[EVA-POST EXCEPTION] (unknown)" << std::endl;
         }
     }
 }
@@ -1925,9 +1934,15 @@ emergencyVehicleAlert::CalculateOptimalDeceleration (double v1, double a1, doubl
 void
 emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long senderStationId)
 {
+  std::cout << "[EVA-COOP " << Simulator::Now ().GetSeconds () << "s] " << m_id
+            << " HandleCooperativeDenm sender=" << senderStationId << std::endl;
+
   // Don't re-enter if already actively processing
   if (m_coopBraking.active && m_coopBraking.decisionMade)
     return;
+
+  try
+    {
 
   unsigned long my_station_id = std::stol (m_id.substr (3));
 
@@ -2192,6 +2207,18 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
         }
 
       ApplyCooperativeBraking (my_max_decel, false);
+    }
+
+    }
+  catch (const std::exception &e)
+    {
+      std::cout << "[EVA-COOP EXCEPTION " << Simulator::Now ().GetSeconds () << "s] "
+                << m_id << " " << e.what () << std::endl;
+    }
+  catch (...)
+    {
+      std::cout << "[EVA-COOP EXCEPTION " << Simulator::Now ().GetSeconds () << "s] "
+                << m_id << " (unknown)" << std::endl;
     }
 }
 

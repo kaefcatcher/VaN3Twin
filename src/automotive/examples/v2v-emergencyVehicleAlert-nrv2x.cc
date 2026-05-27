@@ -235,6 +235,9 @@ main (int argc, char *argv[])
   cmd.AddValue ("send-denm", "Enable DENM event triggering; set false for a CAM-only baseline", sendDenm);
   cmd.AddValue ("sigma-mode", "How V2 picks decision-time budget σ: 'computed', 'fixed', or 'scaled'", sigmaMode);
   cmd.AddValue ("fixed-sigma", "σ override; meaning depends on sigma-mode (seconds or multiplier)", fixedSigma);
+  cmd.AddValue ("harm-log-file", "Output CSV path for the time-sampled pairwise HARM log", harmLogFile);
+  cmd.AddValue ("harm-log-period-s", "Sampling period (s) of the HARM log", harmLogPeriodS);
+  cmd.AddValue ("harm-log-radius-m", "Pairing radius (m) for the HARM log", harmLogRadiusM);
 
   cmd.AddValue ("simTime",
                 "Simulation time in seconds",

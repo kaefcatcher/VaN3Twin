@@ -1012,6 +1012,8 @@ namespace ns3 {
   void
   DENBasicService::receiveDENM(BTPDataIndication_t dataIndication,Address from)
   {
+    std::cout << "[DEN RECV " << Simulator::Now ().GetSeconds () << "s] station="
+              << m_station_id << " entered DENBasicService::receiveDENM" << std::endl;
     Ptr<Packet> packet;
     asn1cpp::Seq<DENM> decoded_denm;
     denData den_data;

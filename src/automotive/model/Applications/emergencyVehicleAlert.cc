@@ -608,6 +608,8 @@ emergencyVehicleAlert::CheckForEvents ()
                     << " " << reason << " cause=" << cause << "/" << subcause
                     << " v=" << my_speed << " a=" << my_accel << std::endl;
           TriggerDenm (cause, subcause);
+          std::cout << "[EVA-AFTER-TRIGGER] " << m_id << " back in CheckForEvents"
+                    << std::endl;
           m_is_event_active = true;
         }
     }
@@ -1458,6 +1460,13 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
           std::cout << "[EVA-POST EXCEPTION] (unknown)" << std::endl;
         }
     }
+
+  // Print right before the function returns. If [EVA-POST 4] never appears,
+  // the crash is inside the destructor of the local `data` (denData) or
+  // `actionid` (DEN_ActionID_t). If it appears but the next event never
+  // fires, the crash is somewhere in the ns-3 event loop or a peer
+  // application's TX/RX processing of this packet.
+  std::cout << "[EVA-POST 4] TriggerDenm returning" << std::endl;
 }
 
 void

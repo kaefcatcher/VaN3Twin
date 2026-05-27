@@ -1012,23 +1012,9 @@ namespace ns3 {
   void
   DENBasicService::receiveDENM(BTPDataIndication_t dataIndication,Address from)
   {
-    // Gated receive-path traces — first 3 receive events per station only.
-    // Use std::cerr (unbuffered) so the last printed line before any
-    // SIGSEGV is reliably visible. Trace name kept short.
-    static thread_local int s_rxTraceCount = 0;
-    const bool rxTrace = (s_rxTraceCount < 3);
-    if (rxTrace) {
-      s_rxTraceCount++;
-      std::cerr << "[RX " << Simulator::Now ().GetSeconds () << "s s=" << m_station_id
-                << "] enter receiveDENM" << std::endl;
-    }
-    if (rxTrace) std::cerr << "[RX] before Ptr<Packet>" << std::endl;
     Ptr<Packet> packet;
-    if (rxTrace) std::cerr << "[RX] before Seq<DENM>" << std::endl;
     asn1cpp::Seq<DENM> decoded_denm;
-    if (rxTrace) std::cerr << "[RX] before denData den_data" << std::endl;
     denData den_data;
-    if (rxTrace) std::cerr << "[RX] after denData den_data" << std::endl;
     long validityDuration,termination;
     bool validity_ok,termination_ok;
     DEN_ActionID_t actionID;
@@ -1037,20 +1023,13 @@ namespace ns3 {
     long referenceTime_long;
     std::pair <unsigned long, long> map_index;
 
-    if (rxTrace) std::cerr << "[RX] before packet = dataIndication.data" << std::endl;
     packet = dataIndication.data;
-    if (rxTrace) std::cerr << "[RX] packet=" << (packet ? "ok" : "NULL") << std::endl;
-
     uint32_t pktSize = packet ? packet->GetSize () : 0;
-    if (rxTrace) std::cerr << "[RX] pktSize=" << pktSize << std::endl;
 
     uint8_t *buffer;
     buffer=(uint8_t *)malloc(pktSize*sizeof(uint8_t));
-    if (rxTrace) std::cerr << "[RX] buffer=" << (buffer ? "ok" : "NULL") << std::endl;
-
     if (pktSize > 0) packet->CopyData (buffer, pktSize);
     std::string packetContent((char *)buffer,(int) pktSize);
-    if (rxTrace) std::cerr << "[RX] packetContent ready, size=" << packetContent.size () << std::endl;
 
     RssiTag rssi;
     bool rssi_result = dataIndication.data->PeekPacketTag(rssi);
@@ -1069,7 +1048,6 @@ namespace ns3 {
 
     TimestampTag timestamp;
     dataIndication.data->PeekPacketTag(timestamp);
-    if (rxTrace) std::cerr << "[RX] all tags peeked" << std::endl;
 
     if(!snr_result)
       {
@@ -1093,7 +1071,6 @@ namespace ns3 {
       }
 
     SetSignalInfo(timestamp.Get(), size.Get(), rssi.Get(), snr.Get(), sinr.Get(), rsrp.Get());
-    if (rxTrace) std::cerr << "[RX] SetSignalInfo done" << std::endl;
 
     if(!CheckMainAttributes ())
       {
@@ -1101,22 +1078,18 @@ namespace ns3 {
         free(buffer);
         return;
       }
-    if (rxTrace) std::cerr << "[RX] CheckMainAttributes ok" << std::endl;
 
     /* Try to check if the received packet is really a DENM */
     if (pktSize < 2 || buffer[1]!=FIX_DENMID)
       {
         NS_LOG_ERROR("Warning: received a message which has messageID '"<<(pktSize >= 2 ? (int)buffer[1] : -1)<<"' but '1' was expected.");
-        if (rxTrace) std::cerr << "[RX] not a DENM (size=" << pktSize << ")" << std::endl;
         free(buffer);
         return;
       }
 
     /** Decoding **/
     free(buffer);
-    if (rxTrace) std::cerr << "[RX] before decodeASN size=" << packetContent.size () << std::endl;
     decoded_denm = asn1cpp::uper::decodeASN(packetContent, DENM);
-    if (rxTrace) std::cerr << "[RX] after decodeASN ok=" << (bool) decoded_denm << std::endl;
 
     if(bool(decoded_denm)==false) {
         NS_LOG_ERROR("Warning: unable to decode a received DENM.");
@@ -1218,35 +1191,29 @@ namespace ns3 {
     /* Fill den_data with the received information */
     bool location_ok,situation_ok,alacarte_ok;
 
-    if (rxTrace) std::cerr << "[RX] step=header" << std::endl;
     auto header = asn1cpp::getSeq(decoded_denm->header,ItsPduHeader);
     DENBasicService::fillDenDataHeader (header, den_data);
 
-    if (rxTrace) std::cerr << "[RX] step=management" << std::endl;
     auto management = asn1cpp::getSeq(decoded_denm->denm.management,ManagementContainer);
     DENBasicService::fillDenDataManagement (management, den_data);
 
-    if (rxTrace) std::cerr << "[RX] step=location" << std::endl;
     auto location = asn1cpp::getSeqOpt(decoded_denm->denm.location,LocationContainer,&location_ok);
-    if(location_ok)
+    // asn1cpp::Impl::Getter<Seq<T>,T>::operator() sets `ok=true` even when
+    // the wrapped Seq is internally null (its copy-ctor / deepCopy BER
+    // round-trip can fail silently for containers with patched-in
+    // extension fields — e.g. AlacarteContainer here). Gate the fill
+    // calls on the Seq itself, not just `*_ok`, so we never deref a
+    // nullptr inside fillDenData*.
+    if(location_ok && location)
         DENBasicService::fillDenDataLocation (location, den_data);
 
-    if (rxTrace) std::cerr << "[RX] step=situation" << std::endl;
     auto situation = asn1cpp::getSeqOpt(decoded_denm->denm.situation,SituationContainer,&situation_ok);
-    if(situation_ok)
+    if(situation_ok && situation)
         DENBasicService::fillDenDataSituation (situation, den_data);
 
-    if (rxTrace) std::cerr << "[RX] step=alacarte-before-getSeqOpt" << std::endl;
     auto alacarte = asn1cpp::getSeqOpt(decoded_denm->denm.alacarte,AlacarteContainer,&alacarte_ok);
-    if (rxTrace) std::cerr << "[RX] step=alacarte-after-getSeqOpt ok=" << alacarte_ok << std::endl;
-    if(alacarte_ok)
-      {
-        if (rxTrace) std::cerr << "[RX] step=alacarte-before-fill" << std::endl;
+    if(alacarte_ok && alacarte)
         DENBasicService::fillDenDataAlacarte (alacarte, den_data);
-        if (rxTrace) std::cerr << "[RX] step=alacarte-after-fill" << std::endl;
-      }
-
-    if (rxTrace) std::cerr << "[RX] step=callback" << std::endl;
 
     NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] [DEN] station " << m_station_id
                  << " RECEIVE actionId=(" << actionID.originatingStationID << ","
@@ -1257,7 +1224,6 @@ namespace ns3 {
     } else if(m_DENReceiveCallbackExtended!=nullptr) {
       m_DENReceiveCallbackExtended(den_data,from,m_station_id,m_stationtype,GetSignalInfo());
     }
-    if (rxTrace) std::cerr << "[RX] step=done" << std::endl;
   }
 
   void
@@ -1516,28 +1482,14 @@ namespace ns3 {
   void
   DENBasicService::fillDenDataAlacarte(const asn1cpp::Seq<AlacarteContainer> &denm_alacarte_container, denData &denm_data)
   {
-    std::cerr << "[ALA] enter" << std::endl;
     denData::denDataAlacarte alacarte;
     bool ok;
 
-    std::cerr << "[ALA] lanePosition pre" << std::endl;
-    std::cerr << "[ALA]   lanePosition ptr=" << (void*) denm_alacarte_container->lanePosition << std::endl;
-    long lanePos = 0;
-    if (denm_alacarte_container->lanePosition != nullptr) {
-      std::cerr << "[ALA]   *ptr=" << *(denm_alacarte_container->lanePosition) << std::endl;
-      lanePos = *(denm_alacarte_container->lanePosition);
-      ok = true;
-    } else {
-      ok = false;
-    }
-    std::cerr << "[ALA] lanePosition got value=" << lanePos << " ok=" << ok << std::endl;
+    auto lanePos = asn1cpp::getField(denm_alacarte_container->lanePosition,long,&ok);
     if(ok)
       alacarte.lanePosition.setData (lanePos);
-    std::cerr << "[ALA] lanePosition setData done" << std::endl;
 
-    std::cerr << "[ALA] impactReduction" << std::endl;
     auto impactReduction = asn1cpp::getSeqOpt(denm_alacarte_container->impactReduction,ImpactReductionContainer,&ok);
-    std::cerr << "[ALA] impactReduction ok=" << ok << std::endl;
     if(ok)
       {
         DEN_ImpactReductionContainer_t impactReduction_data = {};
@@ -1571,14 +1523,11 @@ namespace ns3 {
         alacarte.impactReduction.setData (impactReduction_data);
       }
 
-    std::cerr << "[ALA] externalTemperature" << std::endl;
     auto externalTemp = asn1cpp::getField(denm_alacarte_container->externalTemperature,long,&ok);
     if(ok)
       alacarte.externalTemperature.setData (externalTemp);
 
-    std::cerr << "[ALA] roadWorks" << std::endl;
     auto roadworks = asn1cpp::getSeqOpt(denm_alacarte_container->roadWorks,RoadWorksContainerExtended,&ok);
-    std::cerr << "[ALA] roadWorks ok=" << ok << std::endl;
     if(ok)
       {
         DEN_RoadWorksContainerExtended_t roadworks_data = {};
@@ -1676,14 +1625,11 @@ namespace ns3 {
         alacarte.roadWorks.setData (roadworks_data);
       }
 
-    std::cerr << "[ALA] positioningSolution" << std::endl;
     auto positioningSol = asn1cpp::getField(denm_alacarte_container->positioningSolution,long,&ok);
     if(ok)
       alacarte.positioningSolution.setData (positioningSol);
 
-    std::cerr << "[ALA] stationaryVehicle" << std::endl;
     auto stationaryVehicle = asn1cpp::getSeqOpt(denm_alacarte_container->stationaryVehicle,StationaryVehicleContainer,&ok);
-    std::cerr << "[ALA] stationaryVehicle ok=" << ok << std::endl;
     if(ok)
       {
         bool stationary_ok;
@@ -1754,23 +1700,18 @@ namespace ns3 {
       }
 
     /* Ethical V2X extension fields */
-    std::cerr << "[ALA] ethicalMaxDeceleration" << std::endl;
     auto ethMaxDecel = asn1cpp::getField(denm_alacarte_container->ethicalMaxDeceleration, long, &ok);
     if(ok)
       alacarte.maxDeceleration.setData (static_cast<double>(ethMaxDecel) / 10.0);
 
-    std::cerr << "[ALA] ethicalBrakingStartTime" << std::endl;
     auto ethBrakeTime = asn1cpp::getField(denm_alacarte_container->ethicalBrakingStartTime, long, &ok);
     if(ok)
       alacarte.brakingStartTime.setData (ethBrakeTime);
 
-    std::cerr << "[ALA] ethicalVehicleMass" << std::endl;
     auto ethMass = asn1cpp::getField(denm_alacarte_container->ethicalVehicleMass, long, &ok);
     if(ok)
       alacarte.vehicleMass.setData (ethMass);
 
-    std::cerr << "[ALA] setDenmAlacarteData_asn_types" << std::endl;
     denm_data.setDenmAlacarteData_asn_types (alacarte);
-    std::cerr << "[ALA] exit" << std::endl;
   }
 }

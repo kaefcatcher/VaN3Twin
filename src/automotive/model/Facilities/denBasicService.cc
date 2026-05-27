@@ -1437,12 +1437,20 @@ namespace ns3 {
     denData::denDataLocation location;
     bool ok;
 
+    // Traces is SEQUENCE SIZE(1..7) OF PathHistory, PathHistory is
+    // SEQUENCE SIZE(0..40) OF PathPoint. Previous code hardcoded
+    //   for(i=0; i<3; i++) { for(j=0; j<3; j++) ... }
+    // which reads past the actual length whenever the sender (i.e.
+    // our own TriggerDenm) only set 1 trace with 1 point — undefined
+    // behaviour, segfault on the receiver. Use the real sequence size.
     auto traces = asn1cpp::getSeq(denm_location_container->traces,Traces);
-    for(int i=0; i<3;i++)
+    int traces_size = asn1cpp::sequenceof::getSize(*traces);
+    for(int i=0; i<traces_size; i++)
       {
         auto pathHistory = asn1cpp::sequenceof::getSeq(*traces,Path,i);
         std::vector<DEN_PathPoint_t> pathHistory_data;
-        for(int j=0;j<3;j++)
+        int path_size = asn1cpp::sequenceof::getSize(*pathHistory);
+        for(int j=0; j<path_size; j++)
           {
             auto pathPoint = asn1cpp::sequenceof::getSeq(*pathHistory,PathPoint,j);
             DEN_PathPoint_t pathPoint_data;
@@ -1458,15 +1466,26 @@ namespace ns3 {
         location.traces.push_back (pathHistory_data);
       }
 
-    auto speed = asn1cpp::getField(denm_location_container->eventSpeed->speedValue,long,&ok);
+    // eventSpeed and eventPositionHeading are OPTIONAL — i.e. nullable
+    // pointers in the C struct. Dereferencing -> field without a NULL
+    // check is what crashed when TriggerDenm built a location container
+    // with only eventSpeed but no eventPositionHeading. Use getSeqOpt
+    // which yields a "ok" bit and only touches the pointer on hit.
+    auto eventSpeed = asn1cpp::getSeqOpt(denm_location_container->eventSpeed,Speed,&ok);
     if(ok)
-      location.eventSpeed.setData (DENValueConfidence<long,long>(speed,
-                  asn1cpp::getField(denm_location_container->eventSpeed->speedConfidence,long)));
+      {
+        long speed = asn1cpp::getField(eventSpeed->speedValue,long);
+        long speedConf = asn1cpp::getField(eventSpeed->speedConfidence,long);
+        location.eventSpeed.setData (DENValueConfidence<long,long>(speed, speedConf));
+      }
 
-    auto heading = asn1cpp::getField(denm_location_container->eventPositionHeading->headingValue,long,&ok);
+    auto eventHeading = asn1cpp::getSeqOpt(denm_location_container->eventPositionHeading,Heading,&ok);
     if(ok)
-      location.eventPositionHeading.setData (DENValueConfidence<long,long>(heading,
-                  asn1cpp::getField(denm_location_container->eventPositionHeading->headingConfidence,long)));
+      {
+        long heading = asn1cpp::getField(eventHeading->headingValue,long);
+        long headingConf = asn1cpp::getField(eventHeading->headingConfidence,long);
+        location.eventPositionHeading.setData (DENValueConfidence<long,long>(heading, headingConf));
+      }
 
     auto roadType = asn1cpp::getField(denm_location_container->roadType,long,&ok);
     if(ok)

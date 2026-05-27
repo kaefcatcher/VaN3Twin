@@ -1520,10 +1520,20 @@ namespace ns3 {
     denData::denDataAlacarte alacarte;
     bool ok;
 
-    std::cerr << "[ALA] lanePosition" << std::endl;
-    auto lanePos = asn1cpp::getField(denm_alacarte_container->lanePosition,long,&ok);
+    std::cerr << "[ALA] lanePosition pre" << std::endl;
+    std::cerr << "[ALA]   lanePosition ptr=" << (void*) denm_alacarte_container->lanePosition << std::endl;
+    long lanePos = 0;
+    if (denm_alacarte_container->lanePosition != nullptr) {
+      std::cerr << "[ALA]   *ptr=" << *(denm_alacarte_container->lanePosition) << std::endl;
+      lanePos = *(denm_alacarte_container->lanePosition);
+      ok = true;
+    } else {
+      ok = false;
+    }
+    std::cerr << "[ALA] lanePosition got value=" << lanePos << " ok=" << ok << std::endl;
     if(ok)
       alacarte.lanePosition.setData (lanePos);
+    std::cerr << "[ALA] lanePosition setData done" << std::endl;
 
     std::cerr << "[ALA] impactReduction" << std::endl;
     auto impactReduction = asn1cpp::getSeqOpt(denm_alacarte_container->impactReduction,ImpactReductionContainer,&ok);

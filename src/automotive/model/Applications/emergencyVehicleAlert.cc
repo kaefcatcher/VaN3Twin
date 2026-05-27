@@ -233,7 +233,6 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_speed_window_full = false;
   m_has_been_moving = false;
   m_stationary_already_reported = false;
-  m_trace_ticks_remaining = 50;
 }
 
 emergencyVehicleAlert::~emergencyVehicleAlert ()
@@ -533,36 +532,8 @@ emergencyVehicleAlert::CheckForEvents ()
   if (my_speed > m_was_moving_speed)
     m_has_been_moving = true;
 
-  // Unconditional trace for the first ~5 s so the user can see ticks at
-  // all, regardless of any log-level mishap.
-  if (m_trace_ticks_remaining > 0)
-    {
-      double gap_for_trace = -1.0;
-      double leader_v_for_trace = -1.0;
-      auto leader_for_trace = m_client->TraCIAPI::vehicle.getLeader (m_id, 100.0);
-      if (!leader_for_trace.first.empty () && leader_for_trace.second >= 0)
-        {
-          gap_for_trace = leader_for_trace.second;
-          try
-            {
-              leader_v_for_trace =
-                  m_client->TraCIAPI::vehicle.getSpeed (leader_for_trace.first);
-            }
-          catch (...)
-            {
-            }
-        }
-      std::cout << "[EVA-TICK " << Simulator::Now ().GetSeconds () << "s] " << m_id
-                << " active=" << m_is_event_active
-                << " v=" << my_speed
-                << " a=" << my_accel
-                << " gap=" << gap_for_trace
-                << " vlead=" << leader_v_for_trace
-                << std::endl;
-      m_trace_ticks_remaining--;
-    }
-
-  // Same snapshot at NS_LOG_INFO once per second for the rest of the run.
+  // One-per-second state snapshot at NS_LOG_INFO. Gated, so silent
+  // unless the emergencyVehicleAlert log component is on.
   static thread_local uint32_t s_tick = 0;
   if ((++s_tick % 10) == 0)
     {
@@ -608,8 +579,6 @@ emergencyVehicleAlert::CheckForEvents ()
                     << " " << reason << " cause=" << cause << "/" << subcause
                     << " v=" << my_speed << " a=" << my_accel << std::endl;
           TriggerDenm (cause, subcause);
-          std::cout << "[EVA-AFTER-TRIGGER] " << m_id << " back in CheckForEvents"
-                    << std::endl;
           m_is_event_active = true;
         }
     }
@@ -1303,18 +1272,6 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
   libsumo::TraCIPosition pos =
       m_client->TraCIAPI::simulation.convertXYtoLonLat (posXY.x, posXY.y);
 
-  // Unconditional trace so we can see exactly what convertXYtoLonLat
-  // returned and what gets multiplied by DOT_ONE_MICRO before going to
-  // ASN.1. If SUMO has no working projection (projParameter="!"), pos.x
-  // and pos.y here will be the raw SUMO metres and the encoded
-  // longitude blows past the ASN.1 1.8·10⁹ limit.
-  std::cout << "[EVA-TRIGGER " << Simulator::Now ().GetSeconds () << "s] " << m_id
-            << " XY=(" << posXY.x << "," << posXY.y << ")"
-            << " LonLat=(" << pos.x << "," << pos.y << ")"
-            << " latEnc=" << (long) (pos.y * DOT_ONE_MICRO)
-            << " lonEnc=" << (long) (pos.x * DOT_ONE_MICRO)
-            << std::endl;
-
   // Detection time: the time at which the event was originally detected.
   // Capture it once here and reuse it through UpdateDenm/TerminateDenm so the
   // DENM keeps a stable detection-time anchor across its lifecycle, per
@@ -1424,10 +1381,8 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
                 << "," << actionid.sequenceNumber << ") cause=" << causeCode
                 << "/" << subCauseCode << std::endl;
 
-      // Per-step traces so a post-TRIGGER SIGSEGV localises to one line.
       try
         {
-          std::cout << "[EVA-POST 1] setColor" << std::endl;
           libsumo::TraCIColor red;
           red.r = 255;
           red.g = 0;
@@ -1435,38 +1390,26 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
           red.a = 255;
           m_client->TraCIAPI::vehicle.setColor (m_id, red);
 
-          std::cout << "[EVA-POST 2] schedule UpdateDenm" << std::endl;
+          // V1's "a1 = a_max" is enforced externally by the force_brake
+          // scheduler in the NR scenario. We deliberately do NOT call
+          // ApplyCooperativeBraking on the originator here — stacking a
+          // second slowDown on the same vehicle in the same simulator
+          // step desyncs TraCI. The middle / rear branches of
+          // HandleCooperativeDenm still call ApplyCooperativeBraking on
+          // *their own* vehicle, which is safe.
           m_update_denm_ev =
               Simulator::Schedule (MilliSeconds (500),
                                    &emergencyVehicleAlert::UpdateDenm, this, actionid);
-
-          // V1's "a1 = a_max" is already enforced by the force_brake scheduler
-          // in the NR scenario (which calls slowDown on veh0 at force_brake_time).
-          // Calling slowDown a second time here from inside TriggerDenm — while
-          // the first slowDown is still resolving in SUMO — stacks commands on
-          // the same vehicle and desyncs TraCI. Skip this path on the
-          // originator. The middle / rear branches of HandleCooperativeDenm
-          // still call ApplyCooperativeBraking on themselves, where it is the
-          // only brake source for that vehicle and therefore safe.
-          std::cout << "[EVA-POST 3] done (V1 brake left to force-brake scheduler)"
-                    << std::endl;
         }
       catch (const std::exception &e)
         {
-          std::cout << "[EVA-POST EXCEPTION] " << e.what () << std::endl;
+          NS_LOG_ERROR ("TriggerDenm post-encode exception: " << e.what ());
         }
       catch (...)
         {
-          std::cout << "[EVA-POST EXCEPTION] (unknown)" << std::endl;
+          NS_LOG_ERROR ("TriggerDenm post-encode exception (unknown)");
         }
     }
-
-  // Print right before the function returns. If [EVA-POST 4] never appears,
-  // the crash is inside the destructor of the local `data` (denData) or
-  // `actionid` (DEN_ActionID_t). If it appears but the next event never
-  // fires, the crash is somewhere in the ns-3 event loop or a peer
-  // application's TX/RX processing of this packet.
-  std::cout << "[EVA-POST 4] TriggerDenm returning" << std::endl;
 }
 
 void
@@ -1943,8 +1886,8 @@ emergencyVehicleAlert::CalculateOptimalDeceleration (double v1, double a1, doubl
 void
 emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long senderStationId)
 {
-  std::cout << "[EVA-COOP " << Simulator::Now ().GetSeconds () << "s] " << m_id
-            << " HandleCooperativeDenm sender=" << senderStationId << std::endl;
+  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] " << m_id
+               << " HandleCooperativeDenm sender=" << senderStationId);
 
   // Don't re-enter if already actively processing
   if (m_coopBraking.active && m_coopBraking.decisionMade)
@@ -2221,13 +2164,13 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
     }
   catch (const std::exception &e)
     {
-      std::cout << "[EVA-COOP EXCEPTION " << Simulator::Now ().GetSeconds () << "s] "
-                << m_id << " " << e.what () << std::endl;
+      NS_LOG_ERROR ("[" << Simulator::Now ().GetSeconds () << "s] " << m_id
+                    << " HandleCooperativeDenm exception: " << e.what ());
     }
   catch (...)
     {
-      std::cout << "[EVA-COOP EXCEPTION " << Simulator::Now ().GetSeconds () << "s] "
-                << m_id << " (unknown)" << std::endl;
+      NS_LOG_ERROR ("[" << Simulator::Now ().GetSeconds () << "s] " << m_id
+                    << " HandleCooperativeDenm exception (unknown)");
     }
 }
 

@@ -215,10 +215,6 @@ private:
   bool m_speed_window_full = false;
   bool m_has_been_moving = false;
   bool m_stationary_already_reported = false;
-
-  /* Trace ticks at startup so the user can see CheckForEvents is alive.
-     0 = unconditional std::cout suppressed (used after warmup). */
-  int m_trace_ticks_remaining = 50;
   std::string m_sigma_mode;          // "computed" | "fixed" | "scaled"
   double m_fixed_sigma;              // seconds (fixed) or multiplier (scaled)
 

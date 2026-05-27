@@ -110,14 +110,6 @@ denData::setDenmMandatoryFields (long detectionTime_ms, double latReference_deg,
 
   m_management.latitude = lat;
   m_management.longitude = lon;
-
-  // Unconditional trace so any "DENM never fires" debug session can confirm
-  // what coordinates actually reached the ASN.1 layer.
-  std::cout << "[DEN setDenmMandatoryFields] detTime_ms=" << detectionTime_ms
-            << " latIn=" << (long) latReference_deg
-            << " lonIn=" << (long) longReference_deg
-            << " latStored=" << lat << " lonStored=" << lon << std::endl;
-
   m_management.altitude.setValue (AltitudeValue_unavailable);
   m_management.altitude.setConfidence (AltitudeConfidence_unavailable);
   m_management.posConfidenceEllipse.semiMajorConfidence = SemiAxisLength_unavailable;

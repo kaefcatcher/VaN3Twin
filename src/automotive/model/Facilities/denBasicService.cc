@@ -1012,8 +1012,6 @@ namespace ns3 {
   void
   DENBasicService::receiveDENM(BTPDataIndication_t dataIndication,Address from)
   {
-    std::cout << "[DEN RECV " << Simulator::Now ().GetSeconds () << "s] station="
-              << m_station_id << " entered DENBasicService::receiveDENM" << std::endl;
     Ptr<Packet> packet;
     asn1cpp::Seq<DENM> decoded_denm;
     denData den_data;
@@ -1090,13 +1088,7 @@ namespace ns3 {
 
     /** Decoding **/
     free(buffer);
-    std::cout << "[DEN RECV " << Simulator::Now ().GetSeconds () << "s] station="
-              << m_station_id << " before uper::decodeASN, packetContent.size="
-              << packetContent.size () << std::endl;
     decoded_denm = asn1cpp::uper::decodeASN(packetContent, DENM);
-    std::cout << "[DEN RECV " << Simulator::Now ().GetSeconds () << "s] station="
-              << m_station_id << " after uper::decodeASN, ok="
-              << (bool) decoded_denm << std::endl;
 
     if(bool(decoded_denm)==false) {
         NS_LOG_ERROR("Warning: unable to decode a received DENM.");
@@ -1198,36 +1190,23 @@ namespace ns3 {
     /* Fill den_data with the received information */
     bool location_ok,situation_ok,alacarte_ok;
 
-    std::cout << "[DEN RECV " << Simulator::Now ().GetSeconds () << "s] station="
-              << m_station_id << " step=header" << std::endl;
     auto header = asn1cpp::getSeq(decoded_denm->header,ItsPduHeader);
     DENBasicService::fillDenDataHeader (header, den_data);
 
-    std::cout << "[DEN RECV " << Simulator::Now ().GetSeconds () << "s] station="
-              << m_station_id << " step=management" << std::endl;
     auto management = asn1cpp::getSeq(decoded_denm->denm.management,ManagementContainer);
     DENBasicService::fillDenDataManagement (management, den_data);
 
-    std::cout << "[DEN RECV " << Simulator::Now ().GetSeconds () << "s] station="
-              << m_station_id << " step=location" << std::endl;
     auto location = asn1cpp::getSeqOpt(decoded_denm->denm.location,LocationContainer,&location_ok);
     if(location_ok)
         DENBasicService::fillDenDataLocation (location, den_data);
 
-    std::cout << "[DEN RECV " << Simulator::Now ().GetSeconds () << "s] station="
-              << m_station_id << " step=situation" << std::endl;
     auto situation = asn1cpp::getSeqOpt(decoded_denm->denm.situation,SituationContainer,&situation_ok);
     if(situation_ok)
         DENBasicService::fillDenDataSituation (situation, den_data);
 
-    std::cout << "[DEN RECV " << Simulator::Now ().GetSeconds () << "s] station="
-              << m_station_id << " step=alacarte" << std::endl;
     auto alacarte = asn1cpp::getSeqOpt(decoded_denm->denm.alacarte,AlacarteContainer,&alacarte_ok);
     if(alacarte_ok)
         DENBasicService::fillDenDataAlacarte (alacarte, den_data);
-
-    std::cout << "[DEN RECV " << Simulator::Now ().GetSeconds () << "s] station="
-              << m_station_id << " step=callback" << std::endl;
 
     NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] [DEN] station " << m_station_id
                  << " RECEIVE actionId=(" << actionID.originatingStationID << ","
@@ -1238,8 +1217,6 @@ namespace ns3 {
     } else if(m_DENReceiveCallbackExtended!=nullptr) {
       m_DENReceiveCallbackExtended(den_data,from,m_station_id,m_stationtype,GetSignalInfo());
     }
-    std::cout << "[DEN RECV " << Simulator::Now ().GetSeconds () << "s] station="
-              << m_station_id << " step=done" << std::endl;
   }
 
   void

@@ -1364,7 +1364,18 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
 
   // Set alacarte container
   data.setDenmAlacarteVehicleMass ((long) m_vehicle_mass);
-  data.setDenmAlacarteLanePosition ((long) m_client->TraCIAPI::vehicle.getLanePosition (m_id));
+  // ASN.1 LanePosition is the lane *index* (-1..14: offTheRoad, hardShoulder,
+  // innermost driving lane, …, outerHardShoulder), NOT the longitudinal offset.
+  // TraCI's getLanePosition returns metres-along-lane (was overflowing the
+  // (-1..14) constraint and killing the UPER encode with failed_type=LanePosition).
+  // Clamp the lane index defensively in case TraCI returns >14 (e.g. on
+  // multi-lane motorway scenarios beyond ETSI's enumerated range).
+  {
+    long laneIdx = (long) m_client->TraCIAPI::vehicle.getLaneIndex (m_id);
+    if (laneIdx < -1) laneIdx = -1;
+    if (laneIdx > 14) laneIdx = 14;
+    data.setDenmAlacarteLanePosition (laneIdx);
+  }
 
   // The ethical extension fields (ethicalMaxDeceleration,
   // ethicalBrakingStartTime, ethicalVehicleMass) are *custom*
@@ -1485,7 +1496,18 @@ emergencyVehicleAlert::UpdateDenm (DEN_ActionID actionid)
 
   // Update alacarte
   data.setDenmAlacarteVehicleMass ((long) m_vehicle_mass);
-  data.setDenmAlacarteLanePosition ((long) m_client->TraCIAPI::vehicle.getLanePosition (m_id));
+  // ASN.1 LanePosition is the lane *index* (-1..14: offTheRoad, hardShoulder,
+  // innermost driving lane, …, outerHardShoulder), NOT the longitudinal offset.
+  // TraCI's getLanePosition returns metres-along-lane (was overflowing the
+  // (-1..14) constraint and killing the UPER encode with failed_type=LanePosition).
+  // Clamp the lane index defensively in case TraCI returns >14 (e.g. on
+  // multi-lane motorway scenarios beyond ETSI's enumerated range).
+  {
+    long laneIdx = (long) m_client->TraCIAPI::vehicle.getLaneIndex (m_id);
+    if (laneIdx < -1) laneIdx = -1;
+    if (laneIdx > 14) laneIdx = 14;
+    data.setDenmAlacarteLanePosition (laneIdx);
+  }
 
   if ((m_ethical_braking_enabled || m_cooperative_detection_enabled)
       && m_include_ethical_alacarte)

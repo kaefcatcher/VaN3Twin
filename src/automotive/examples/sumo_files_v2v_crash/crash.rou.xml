@@ -1,0 +1,57 @@
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+
+    <!--
+      Three-car scenario engineered so SUMO's car-follower CANNOT
+      prevent a collision when the leader emergency-brakes. The
+      cooperative algorithm should keep the followers from crashing;
+      the baseline should crash.
+
+      Why each parameter:
+        decel=1.5         followers' max normal decel; far below the
+                          ~25 m/s² the leader will hit during its
+                          force_brake slowDown(0, 1.0)
+        emergencyDecel=2  the absolute hardest brake SUMO will apply
+                          (still much less than what's needed to stop
+                          from 25 m/s in the available distance)
+        minGap=0.1        tiny static gap — leaves no room for natural
+                          following safety margin
+        tau=0.2           short time headway — the followers cruise
+                          ~5 m behind, not enough to brake at 1.5 m/s²
+        sigma=0.0         deterministic driver behaviour (no random
+                          jitter) so every run is reproducible
+        carFollowModel=Krauss
+                          standard model — note that even Krauss can't
+                          avoid impact if the kinematics make it
+                          impossible
+        mass=2000/1500/1200
+                          per the paper's ethical-harm analysis (heavier
+                          leader, mid middle, lighter follower) so the
+                          collision-energy metric varies by pair
+    -->
+
+    <vType id="leader"   accel="3.0" decel="9.0" emergencyDecel="9.0"
+           maxSpeed="25" minGap="0.1" tau="0.2" length="5.0" sigma="0.0"
+           mass="2000" carFollowModel="Krauss" color="1,0,0"/>
+
+    <vType id="middle"   accel="3.0" decel="1.5" emergencyDecel="2.0"
+           maxSpeed="25" minGap="0.1" tau="0.2" length="5.0" sigma="0.0"
+           mass="1500" carFollowModel="Krauss" color="1,1,0"/>
+
+    <vType id="follower" accel="3.0" decel="1.5" emergencyDecel="2.0"
+           maxSpeed="25" minGap="0.1" tau="0.2" length="5.0" sigma="0.0"
+           mass="1200" carFollowModel="Krauss" color="0,0,1"/>
+
+    <vehicle id="veh0" type="leader"   depart="0.00" departSpeed="max">
+        <route edges="E0"/>
+    </vehicle>
+
+    <vehicle id="veh1" type="middle"   depart="0.20" departSpeed="max">
+        <route edges="E0"/>
+    </vehicle>
+
+    <vehicle id="veh2" type="follower" depart="0.40" departSpeed="max">
+        <route edges="E0"/>
+    </vehicle>
+
+</routes>

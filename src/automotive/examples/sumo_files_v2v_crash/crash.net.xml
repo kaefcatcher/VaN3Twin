@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+  Collision-prone three-lane straight road. Same UTM-zone-32 anchoring as
+  the cooperative scene (F5) so DENM Latitude/Longitude encoding stays
+  inside the ASN.1 constraint.
+-->
+
+<net version="0.27" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/net_file.xsd">
+
+  <location netOffset="-394175.96,-4989734.74"
+            convBoundary="0.00,48.40,2000.00,51.40"
+            origBoundary="7.6624,45.0537,7.6880,45.0566"
+            projParameter="+proj=utm +zone=32 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"/>
+
+  <edge id="E0" from="J0" to="J1" priority="1">
+    <lane id="E0_0" index="0" speed="30.00" length="2000.00" shape="0.00,48.40 2000.00,48.40"/>
+  </edge>
+
+  <junction id="J0" type="dead_end" x="0.00" y="50.00" incLanes="" intLanes="" shape="0.00,50.00 0.00,46.80"/>
+  <junction id="J1" type="dead_end" x="2000.00" y="50.00" incLanes="E0_0" intLanes="" shape="2000.00,46.80 2000.00,50.00"/>
+
+</net>

@@ -1,39 +1,70 @@
 #!/usr/bin/env bash
-# Drive the baseline + σ-sweep experiment for the cooperative NR-V2X scenario.
+# Drive the baseline + σ-sweep experiment.
 #
-# Outputs (in the working directory, i.e. project root):
+# Two scenarios available, selected by the first positional argument:
+#
+#   cooperative   (default) — SUMO Krauss model with safe followers.
+#                              No crashes ever happen; comparison uses
+#                              pairwise HARM, gap, TTC, collision energy.
+#
+#   crash         — followers have decel=1.5, tau=0.2, minGap=0.1, so
+#                              when V1 emergency-brakes the followers
+#                              CANNOT stop in time.
+#                              SUMO --collision.action warn lets the
+#                              run continue past collisions so we can
+#                              count them and observe peak energy.
+#                              Baseline ⇒ crashes.
+#                              Algorithm ⇒ should prevent / soften.
+#
+# Outputs (in the project root):
 #   - harm_log_baseline.csv
-#   - harm_log_sigma_<value>.csv  for each value in SIGMAS
+#   - harm_log_sigma_<value>.csv  for each σ in SIGMAS
 #   - harm_log_sigma_computed.csv
 #   - <prefix>-vehX-CAM.csv, -MSGLOG.csv, -COOP.csv  (per-run, per-vehicle)
-#
-# Notes:
-#   - The script assumes ./ns3 is configured + built. Run ./ns3 build once
-#     after switching to task/logs_fix.
-#   - It overrides the relevant config.json keys via command-line flags so
-#     you don't have to edit the JSON between runs.
-#   - SUMO GUI is forced OFF for the sweep; with GUI on, each run blocks
-#     waiting for a user click.
-#   - The sweep deliberately does NOT use `set -e` for the per-run loop —
-#     one crashing σ value should not throw away the other runs.
 
 set -uo pipefail
 
 EXAMPLE="v2v-emergencyVehicleAlert-nrv2x"
 SIGMAS=("0.0" "0.1" "0.2" "0.5" "1.0" "2.0")
-SIM_TIME="${SIM_TIME:-40.0}"   # 40 s is long enough: brake at 15 s + ~25 s tail
+SIM_TIME="${SIM_TIME:-40.0}"
+SCENARIO="${1:-cooperative}"
 
-# Every run uses the same forced brake event so HARM totals are comparable
-# across runs.
+case "${SCENARIO}" in
+  cooperative)
+    SUMO_FOLDER="src/automotive/examples/sumo_files_v2v_cooperative/"
+    MOB_TRACE="cooperative.rou.xml"
+    SUMO_CONFIG="src/automotive/examples/sumo_files_v2v_cooperative/cooperative.sumo.cfg"
+    ;;
+  crash)
+    SUMO_FOLDER="src/automotive/examples/sumo_files_v2v_crash/"
+    MOB_TRACE="crash.rou.xml"
+    SUMO_CONFIG="src/automotive/examples/sumo_files_v2v_crash/crash.sumo.cfg"
+    ;;
+  *)
+    echo "Unknown scenario: ${SCENARIO}" >&2
+    echo "Usage: $0 [cooperative|crash] [--plot]" >&2
+    exit 1
+    ;;
+esac
+shift || true   # remaining args go to the analyzer
+
+echo "Sweep scenario: ${SCENARIO}"
+echo "  sumo folder:   ${SUMO_FOLDER}"
+echo "  rou file:      ${MOB_TRACE}"
+echo "  sim time:      ${SIM_TIME} s"
+echo
+
 COMMON="--send-denm=true \
   --sumo-gui=false \
   --simTime=${SIM_TIME} \
+  --sumo-folder=${SUMO_FOLDER} \
+  --mob-trace=${MOB_TRACE} \
+  --sumo-config=${SUMO_CONFIG} \
   --force-brake-time=15.0 \
   --force-brake-vehicle=veh0 \
   --force-brake-duration=1.0 \
   --force-brake-target-speed=0.0"
 
-# Run helper: echo a header, run, and tolerate non-zero exit.
 run_one () {
   local label="$1"
   shift
@@ -47,13 +78,11 @@ run_one () {
   fi
 }
 
-# Baseline: DENMs sent, algorithm OFF. Establishes the no-algo reference.
 run_one "Baseline (cooperative_detection=false)" \
   --cooperative-detection=false \
   --csv-log=baseline \
   --harm-log-file=harm_log_baseline.csv
 
-# σ sweep: algorithm ON, σ chosen by SigmaMode=fixed at each value.
 for sigma in "${SIGMAS[@]}"; do
   run_one "Algorithm run, σ=${sigma}" \
     --cooperative-detection=true \
@@ -63,7 +92,6 @@ for sigma in "${SIGMAS[@]}"; do
     --harm-log-file="harm_log_sigma_${sigma}.csv"
 done
 
-# Bonus: also run with the computed (closed-form) σ for reference.
 run_one "Algorithm run, σ=computed" \
   --cooperative-detection=true \
   --sigma-mode=computed \

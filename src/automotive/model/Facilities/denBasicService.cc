@@ -1022,9 +1022,13 @@ namespace ns3 {
       std::cerr << "[RX " << Simulator::Now ().GetSeconds () << "s s=" << m_station_id
                 << "] enter receiveDENM" << std::endl;
     }
+    if (rxTrace) std::cerr << "[RX] before Ptr<Packet>" << std::endl;
     Ptr<Packet> packet;
+    if (rxTrace) std::cerr << "[RX] before Seq<DENM>" << std::endl;
     asn1cpp::Seq<DENM> decoded_denm;
+    if (rxTrace) std::cerr << "[RX] before denData den_data" << std::endl;
     denData den_data;
+    if (rxTrace) std::cerr << "[RX] after denData den_data" << std::endl;
     long validityDuration,termination;
     bool validity_ok,termination_ok;
     DEN_ActionID_t actionID;
@@ -1033,6 +1037,7 @@ namespace ns3 {
     long referenceTime_long;
     std::pair <unsigned long, long> map_index;
 
+    if (rxTrace) std::cerr << "[RX] before packet = dataIndication.data" << std::endl;
     packet = dataIndication.data;
     if (rxTrace) std::cerr << "[RX] packet=" << (packet ? "ok" : "NULL") << std::endl;
 

@@ -38,5 +38,9 @@
   "force_brake_duration": 1.0,
   "force_brake_target_speed": 0.0,
 
+  "speed_drop_threshold": 3.0,
+  "stationary_speed": 1.0,
+  "was_moving_speed": 5.0,
+
   "csv_name_cumulative": "res"
 }

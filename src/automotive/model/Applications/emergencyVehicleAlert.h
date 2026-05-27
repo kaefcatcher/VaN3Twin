@@ -123,6 +123,8 @@ private:
   void CheckForEvents ();
   bool DetectHardBraking ();
   bool DetectCollisionRisk ();
+  bool DetectSpeedDrop (double current_speed);     // ≥ m_speed_drop_threshold over 1 s window
+  bool DetectStationary (double current_speed);    // came to a stop after moving
   void CleanupForwardingTable ();
 
   /* Cooperative ethical braking algorithm */
@@ -196,6 +198,26 @@ private:
   double m_vehicle_mass;             // kg, default 1500.0
   bool m_ethical_braking_enabled;
   bool m_cooperative_detection_enabled;
+
+  /* Lenient triggers (ETSI cause 26 slowVehicle / 94 stationaryVehicle).
+     These fire from a single vehicle's own kinematics — no leader or gap
+     needed — so they always fire in any scenario where a vehicle slows
+     or stops. Defaults are tuned so any meaningful brake event triggers. */
+  double m_speed_drop_threshold;     // m/s drop within 1 s, default 3.0
+  double m_stationary_speed;         // m/s, below which we count as stopped, default 1.0
+  double m_was_moving_speed;         // m/s, must have been above this earlier, default 5.0
+
+  /* 1-second rolling-window speed history (10 ticks at 0.1 s interval). */
+  static const int SPEED_WINDOW_N = 10;
+  double m_speed_window[SPEED_WINDOW_N];
+  int m_speed_window_pos = 0;
+  bool m_speed_window_full = false;
+  bool m_has_been_moving = false;
+  bool m_stationary_already_reported = false;
+
+  /* Trace ticks at startup so the user can see CheckForEvents is alive.
+     0 = unconditional std::cout suppressed (used after warmup). */
+  int m_trace_ticks_remaining = 50;
   std::string m_sigma_mode;          // "computed" | "fixed" | "scaled"
   double m_fixed_sigma;              // seconds (fixed) or multiplier (scaled)
 

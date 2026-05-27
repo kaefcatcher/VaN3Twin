@@ -144,6 +144,12 @@ main (int argc, char *argv[])
   double forceBrakeDuration = 1.0;          // seconds to reach speed 0
   double forceBrakeTargetSpeed = 0.0;       // m/s
 
+  // Single-vehicle DENM trigger thresholds (cause 26 / 94). Lenient
+  // defaults so any meaningful brake event fires a DENM.
+  double speedDropThreshold = 3.0;          // m/s drop in 1 s
+  double stationarySpeed = 1.0;             // m/s
+  double wasMovingSpeed = 5.0;              // m/s, hysteresis floor
+
   xmlDocPtr rou_xml_file;
   double m_baseline_prr = config.value("m_baseline_prr", 150.0);
   bool m_metric_sup = config.value("m_metric_sup", false);
@@ -217,6 +223,10 @@ main (int argc, char *argv[])
     forceBrakeDuration     = config.value("force_brake_duration", forceBrakeDuration);
     forceBrakeTargetSpeed  = config.value("force_brake_target_speed", forceBrakeTargetSpeed);
 
+    speedDropThreshold     = config.value("speed_drop_threshold", speedDropThreshold);
+    stationarySpeed        = config.value("stationary_speed", stationarySpeed);
+    wasMovingSpeed         = config.value("was_moving_speed", wasMovingSpeed);
+
     NS_LOG_INFO("Configuration loaded from JSON");
   }
   catch (const std::exception& e)
@@ -256,6 +266,9 @@ main (int argc, char *argv[])
   cmd.AddValue ("force-brake-vehicle", "SUMO vehicle id to brake", forceBrakeVehicle);
   cmd.AddValue ("force-brake-duration", "Duration (s) over which the forced brake completes", forceBrakeDuration);
   cmd.AddValue ("force-brake-target-speed", "Target speed (m/s) of the forced brake (0 = full stop)", forceBrakeTargetSpeed);
+  cmd.AddValue ("speed-drop-threshold", "Speed drop (m/s) within 1 s that triggers slowVehicle DENM", speedDropThreshold);
+  cmd.AddValue ("stationary-speed", "Speed (m/s) below which vehicle is considered stopped", stationarySpeed);
+  cmd.AddValue ("was-moving-speed", "Speed (m/s) the vehicle must have exceeded before stationary fires", wasMovingSpeed);
 
   cmd.AddValue ("simTime",
                 "Simulation time in seconds",
@@ -785,6 +798,9 @@ main (int argc, char *argv[])
   EmergencyVehicleAlertHelper.SetAttribute ("SendDENM", BooleanValue (sendDenm));
   EmergencyVehicleAlertHelper.SetAttribute ("SigmaMode", StringValue (sigmaMode));
   EmergencyVehicleAlertHelper.SetAttribute ("FixedSigma", DoubleValue (fixedSigma));
+  EmergencyVehicleAlertHelper.SetAttribute ("SpeedDropThreshold", DoubleValue (speedDropThreshold));
+  EmergencyVehicleAlertHelper.SetAttribute ("StationarySpeed", DoubleValue (stationarySpeed));
+  EmergencyVehicleAlertHelper.SetAttribute ("WasMovingSpeed", DoubleValue (wasMovingSpeed));
 
   /* callback function for node creation */
   int i=0;

@@ -160,6 +160,27 @@ emergencyVehicleAlert::GetTypeId (void)
               "or unitless multiplier (mode=scaled). Ignored when SigmaMode='computed'.",
               DoubleValue (0.5),
               MakeDoubleAccessor (&emergencyVehicleAlert::m_fixed_sigma),
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "SpeedDropThreshold",
+              "Speed drop (m/s) within a 1 s window that triggers a slowVehicle (cause 26) DENM. "
+              "Single-vehicle trigger, fires independently of any leader.",
+              DoubleValue (3.0),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_speed_drop_threshold),
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "StationarySpeed",
+              "Speed (m/s) below which a previously-moving vehicle is considered stationary. "
+              "Triggers a stationaryVehicle (cause 94) DENM once per stop event.",
+              DoubleValue (1.0),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_stationary_speed),
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "WasMovingSpeed",
+              "Speed (m/s) the vehicle must have exceeded at some point before a stationary "
+              "report is allowed. Prevents reporting a never-moved vehicle as stationary.",
+              DoubleValue (5.0),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_was_moving_speed),
               MakeDoubleChecker<double> ());
   return tid;
 }
@@ -193,6 +214,16 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_send_denm = true;
   m_sigma_mode = "computed";
   m_fixed_sigma = 0.5;
+  m_speed_drop_threshold = 3.0;
+  m_stationary_speed = 1.0;
+  m_was_moving_speed = 5.0;
+  for (int i = 0; i < SPEED_WINDOW_N; ++i)
+    m_speed_window[i] = 0.0;
+  m_speed_window_pos = 0;
+  m_speed_window_full = false;
+  m_has_been_moving = false;
+  m_stationary_already_reported = false;
+  m_trace_ticks_remaining = 50;
 }
 
 emergencyVehicleAlert::~emergencyVehicleAlert ()
@@ -388,6 +419,19 @@ emergencyVehicleAlert::StartApplication (void)
   /* Schedule periodic event detection */
   m_event_check_ev = Simulator::Schedule (Seconds (m_event_check_interval),
                                            &emergencyVehicleAlert::CheckForEvents, this);
+
+  // Always-on startup line so the user can see the app actually started
+  // for this vehicle, regardless of log-level configuration.
+  std::cout << "[EVA-START " << Simulator::Now ().GetSeconds () << "s] " << m_id
+            << " send_denm=" << m_send_denm
+            << " coop=" << m_cooperative_detection_enabled
+            << " sigma_mode=" << m_sigma_mode
+            << " fixed_sigma=" << m_fixed_sigma
+            << " hbt=" << m_hard_brake_threshold
+            << " crd=" << m_collision_risk_distance
+            << " drop_thr=" << m_speed_drop_threshold
+            << " stationary_thr=" << m_stationary_speed
+            << std::endl;
 }
 
 void
@@ -454,81 +498,125 @@ emergencyVehicleAlert::StopApplicationNow ()
 void
 emergencyVehicleAlert::CheckForEvents ()
 {
-  // Diagnostic: every 10th tick (≈1 s at the 100 ms interval) print our
-  // detection-state snapshot so a "no DENMs" run reveals which gate
-  // never fires. Cheap, only on when emergencyVehicleAlert log is at
-  // LOG_INFO.
-  static thread_local uint32_t s_tick = 0;
-  if ((++s_tick % 10) == 0)
+  // Read kinematic state once per tick.
+  double my_speed = 0.0;
+  double my_accel = 0.0;
+  try
     {
-      double accel = 0.0, my_speed = 0.0;
-      try
+      my_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+      my_accel = m_client->TraCIAPI::vehicle.getAcceleration (m_id);
+    }
+  catch (...)
+    {
+      // SUMO may not have stepped yet; skip this tick.
+      m_event_check_ev = Simulator::Schedule (Seconds (m_event_check_interval),
+                                               &emergencyVehicleAlert::CheckForEvents, this);
+      return;
+    }
+
+  // Push into the 1 s rolling speed window.
+  m_speed_window[m_speed_window_pos] = my_speed;
+  m_speed_window_pos = (m_speed_window_pos + 1) % SPEED_WINDOW_N;
+  if (m_speed_window_pos == 0)
+    m_speed_window_full = true;
+
+  if (my_speed > m_was_moving_speed)
+    m_has_been_moving = true;
+
+  // Unconditional trace for the first ~5 s so the user can see ticks at
+  // all, regardless of any log-level mishap.
+  if (m_trace_ticks_remaining > 0)
+    {
+      double gap_for_trace = -1.0;
+      double leader_v_for_trace = -1.0;
+      auto leader_for_trace = m_client->TraCIAPI::vehicle.getLeader (m_id, 100.0);
+      if (!leader_for_trace.first.empty () && leader_for_trace.second >= 0)
         {
-          accel = m_client->TraCIAPI::vehicle.getAcceleration (m_id);
-          my_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
-        }
-      catch (...)
-        {
-        }
-      double gap = -1.0;
-      double leader_speed = -1.0;
-      auto leader = m_client->TraCIAPI::vehicle.getLeader (m_id, 100.0);
-      if (!leader.first.empty () && leader.second >= 0)
-        {
-          gap = leader.second;
+          gap_for_trace = leader_for_trace.second;
           try
             {
-              leader_speed = m_client->TraCIAPI::vehicle.getSpeed (leader.first);
+              leader_v_for_trace =
+                  m_client->TraCIAPI::vehicle.getSpeed (leader_for_trace.first);
             }
           catch (...)
             {
             }
         }
-      NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] " << m_id
-                   << " STATE active=" << m_is_event_active
-                   << " v=" << my_speed
-                   << " a=" << accel << "(thr=" << m_hard_brake_threshold << ")"
-                   << " gap=" << gap << "(thr=" << m_collision_risk_distance << ")"
-                   << " vlead=" << leader_speed
-                   << " closing=" << ((leader_speed >= 0) ? my_speed - leader_speed : -1.0));
+      std::cout << "[EVA-TICK " << Simulator::Now ().GetSeconds () << "s] " << m_id
+                << " active=" << m_is_event_active
+                << " v=" << my_speed
+                << " a=" << my_accel
+                << " gap=" << gap_for_trace
+                << " vlead=" << leader_v_for_trace
+                << std::endl;
+      m_trace_ticks_remaining--;
     }
 
-  if (m_send_denm)
+  // Same snapshot at NS_LOG_INFO once per second for the rest of the run.
+  static thread_local uint32_t s_tick = 0;
+  if ((++s_tick % 10) == 0)
     {
-      if (!m_is_event_active)
+      NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] " << m_id
+                   << " STATE active=" << m_is_event_active
+                   << " v=" << my_speed << " a=" << my_accel
+                   << " hbt=" << m_hard_brake_threshold);
+    }
+
+  if (m_send_denm && !m_is_event_active)
+    {
+      long cause = -1, subcause = 0;
+      const char *reason = "";
+
+      if (DetectHardBraking ())
         {
-          if (DetectHardBraking ())
-            {
-              double accel = m_client->TraCIAPI::vehicle.getAcceleration (m_id);
-              // causeCode=99 (dangerousSituation), subCauseCode=1 (emergencyElectronicBrakeEngaged)
-              TriggerDenm (99, 1);
-              m_is_event_active = true;
-
-              NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                               << " detected HARD BRAKING (accel=" << accel << " m/s^2)");
-            }
-          else if (DetectCollisionRisk ())
-            {
-              // causeCode=97 (collisionRisk), subCauseCode=0 (unavailable)
-              TriggerDenm (97, 0);
-              m_is_event_active = true;
-
-              NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                               << " detected COLLISION RISK");
-            }
+          cause = 99;  // dangerousSituation
+          subcause = 1; // emergencyElectronicBrakeEngaged
+          reason = "HARD-BRAKE";
         }
-      else
+      else if (DetectSpeedDrop (my_speed))
         {
-          // Check if event has ended: no longer braking hard and no collision risk
-          double accel = m_client->TraCIAPI::vehicle.getAcceleration (m_id);
-          if (accel > m_hard_brake_threshold && !DetectCollisionRisk ())
-            {
-              TerminateDenm ();
-              m_is_event_active = false;
+          cause = 26;  // slowVehicle (loosest cause for "significant decel")
+          subcause = 0;
+          reason = "SPEED-DROP";
+        }
+      else if (DetectStationary (my_speed))
+        {
+          cause = 94;  // stationaryVehicle
+          subcause = 0;
+          reason = "STATIONARY";
+        }
+      else if (DetectCollisionRisk ())
+        {
+          cause = 97;  // collisionRisk
+          subcause = 0;
+          reason = "COLLISION-RISK";
+        }
 
-              NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                               << " event ended, DENM terminated");
-            }
+      if (cause >= 0)
+        {
+          std::cout << "[EVA-FIRE " << Simulator::Now ().GetSeconds () << "s] " << m_id
+                    << " " << reason << " cause=" << cause << "/" << subcause
+                    << " v=" << my_speed << " a=" << my_accel << std::endl;
+          TriggerDenm (cause, subcause);
+          m_is_event_active = true;
+        }
+    }
+  else if (m_send_denm && m_is_event_active)
+    {
+      // Termination: vehicle no longer in a hard-brake AND no collision risk
+      // AND not stationary (or stationary already reported and we've moved
+      // again). Be conservative — better to leave a DENM active than to
+      // flap.
+      bool not_braking = my_accel > m_hard_brake_threshold;
+      bool not_at_risk = !DetectCollisionRisk ();
+      bool not_stopped = my_speed > m_stationary_speed * 2.0;
+      if (not_braking && not_at_risk && not_stopped)
+        {
+          TerminateDenm ();
+          m_is_event_active = false;
+          m_stationary_already_reported = false;
+          NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                           << " event ended, DENM terminated");
         }
     }
 
@@ -538,6 +626,32 @@ emergencyVehicleAlert::CheckForEvents ()
   // Reschedule
   m_event_check_ev = Simulator::Schedule (Seconds (m_event_check_interval),
                                            &emergencyVehicleAlert::CheckForEvents, this);
+}
+
+bool
+emergencyVehicleAlert::DetectSpeedDrop (double current_speed)
+{
+  if (!m_speed_window_full)
+    return false;
+  // Speed one second ago is at the slot we're about to overwrite next,
+  // i.e. m_speed_window_pos. (Window is 10 entries at 100 ms each.)
+  double one_sec_ago = m_speed_window[m_speed_window_pos];
+  if (one_sec_ago - current_speed >= m_speed_drop_threshold)
+    return true;
+  return false;
+}
+
+bool
+emergencyVehicleAlert::DetectStationary (double current_speed)
+{
+  if (m_stationary_already_reported)
+    return false;
+  if (!m_has_been_moving)
+    return false;
+  if (current_speed >= m_stationary_speed)
+    return false;
+  m_stationary_already_reported = true;
+  return true;
 }
 
 bool
@@ -1014,6 +1128,9 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
     return;
 
   m_denm_received++;
+  std::cout << "[EVA-DENM " << Simulator::Now ().GetSeconds () << "s] " << m_id
+            << " RECEIVE actionId=(" << sender_station_id << "," << sequence_number
+            << ")" << std::endl;
 
   // Extract position information (converted from 0.1 micro-degrees to degrees)
   long latitude_raw = denm.getDenmMgmtLatitude ();
@@ -1249,12 +1366,19 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
 
   if (trigger_retval != DENM_NO_ERROR)
     {
+      std::cout << "[EVA-DENM " << Simulator::Now ().GetSeconds () << "s] " << m_id
+                << " TRIGGER FAILED err=" << trigger_retval
+                << " cause=" << causeCode << "/" << subCauseCode << std::endl;
       NS_LOG_ERROR ("Cannot trigger DENM. Error code: " << trigger_retval);
     }
   else
     {
       m_denm_sent++;
       m_active_action_id = actionid;
+      std::cout << "[EVA-DENM " << Simulator::Now ().GetSeconds () << "s] " << m_id
+                << " TRIGGER OK actionId=(" << actionid.originatingStationID
+                << "," << actionid.sequenceNumber << ") cause=" << causeCode
+                << "/" << subCauseCode << std::endl;
 
       // Change vehicle color to red to indicate event
       libsumo::TraCIColor red;

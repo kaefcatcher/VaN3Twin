@@ -1236,10 +1236,15 @@ namespace ns3 {
     if(situation_ok)
         DENBasicService::fillDenDataSituation (situation, den_data);
 
-    if (rxTrace) std::cerr << "[RX] step=alacarte" << std::endl;
+    if (rxTrace) std::cerr << "[RX] step=alacarte-before-getSeqOpt" << std::endl;
     auto alacarte = asn1cpp::getSeqOpt(decoded_denm->denm.alacarte,AlacarteContainer,&alacarte_ok);
+    if (rxTrace) std::cerr << "[RX] step=alacarte-after-getSeqOpt ok=" << alacarte_ok << std::endl;
     if(alacarte_ok)
+      {
+        if (rxTrace) std::cerr << "[RX] step=alacarte-before-fill" << std::endl;
         DENBasicService::fillDenDataAlacarte (alacarte, den_data);
+        if (rxTrace) std::cerr << "[RX] step=alacarte-after-fill" << std::endl;
+      }
 
     if (rxTrace) std::cerr << "[RX] step=callback" << std::endl;
 
@@ -1511,14 +1516,18 @@ namespace ns3 {
   void
   DENBasicService::fillDenDataAlacarte(asn1cpp::Seq<AlacarteContainer> denm_alacarte_container, denData &denm_data)
   {
+    std::cerr << "[ALA] enter" << std::endl;
     denData::denDataAlacarte alacarte;
     bool ok;
 
+    std::cerr << "[ALA] lanePosition" << std::endl;
     auto lanePos = asn1cpp::getField(denm_alacarte_container->lanePosition,long,&ok);
     if(ok)
       alacarte.lanePosition.setData (lanePos);
 
+    std::cerr << "[ALA] impactReduction" << std::endl;
     auto impactReduction = asn1cpp::getSeqOpt(denm_alacarte_container->impactReduction,ImpactReductionContainer,&ok);
+    std::cerr << "[ALA] impactReduction ok=" << ok << std::endl;
     if(ok)
       {
         DEN_ImpactReductionContainer_t impactReduction_data = {};
@@ -1552,11 +1561,14 @@ namespace ns3 {
         alacarte.impactReduction.setData (impactReduction_data);
       }
 
+    std::cerr << "[ALA] externalTemperature" << std::endl;
     auto externalTemp = asn1cpp::getField(denm_alacarte_container->externalTemperature,long,&ok);
     if(ok)
       alacarte.externalTemperature.setData (externalTemp);
 
+    std::cerr << "[ALA] roadWorks" << std::endl;
     auto roadworks = asn1cpp::getSeqOpt(denm_alacarte_container->roadWorks,RoadWorksContainerExtended,&ok);
+    std::cerr << "[ALA] roadWorks ok=" << ok << std::endl;
     if(ok)
       {
         DEN_RoadWorksContainerExtended_t roadworks_data = {};
@@ -1654,11 +1666,14 @@ namespace ns3 {
         alacarte.roadWorks.setData (roadworks_data);
       }
 
+    std::cerr << "[ALA] positioningSolution" << std::endl;
     auto positioningSol = asn1cpp::getField(denm_alacarte_container->positioningSolution,long,&ok);
     if(ok)
       alacarte.positioningSolution.setData (positioningSol);
 
+    std::cerr << "[ALA] stationaryVehicle" << std::endl;
     auto stationaryVehicle = asn1cpp::getSeqOpt(denm_alacarte_container->stationaryVehicle,StationaryVehicleContainer,&ok);
+    std::cerr << "[ALA] stationaryVehicle ok=" << ok << std::endl;
     if(ok)
       {
         bool stationary_ok;
@@ -1729,18 +1744,23 @@ namespace ns3 {
       }
 
     /* Ethical V2X extension fields */
+    std::cerr << "[ALA] ethicalMaxDeceleration" << std::endl;
     auto ethMaxDecel = asn1cpp::getField(denm_alacarte_container->ethicalMaxDeceleration, long, &ok);
     if(ok)
       alacarte.maxDeceleration.setData (static_cast<double>(ethMaxDecel) / 10.0);
 
+    std::cerr << "[ALA] ethicalBrakingStartTime" << std::endl;
     auto ethBrakeTime = asn1cpp::getField(denm_alacarte_container->ethicalBrakingStartTime, long, &ok);
     if(ok)
       alacarte.brakingStartTime.setData (ethBrakeTime);
 
+    std::cerr << "[ALA] ethicalVehicleMass" << std::endl;
     auto ethMass = asn1cpp::getField(denm_alacarte_container->ethicalVehicleMass, long, &ok);
     if(ok)
       alacarte.vehicleMass.setData (ethMass);
 
-   denm_data.setDenmAlacarteData_asn_types (alacarte);
+    std::cerr << "[ALA] setDenmAlacarteData_asn_types" << std::endl;
+    denm_data.setDenmAlacarteData_asn_types (alacarte);
+    std::cerr << "[ALA] exit" << std::endl;
   }
 }

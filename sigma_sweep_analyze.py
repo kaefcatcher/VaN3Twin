@@ -96,18 +96,35 @@ def main() -> int:
         print(f"No files matched {args.glob}", file=sys.stderr)
         return 1
 
-    rows = []  # (sigma_or_None, label, integral, peak, n_ticks, path)
-    series = {}  # label -> (ts, ys)
+    rows = []   # (sigma_or_None, label, integral, peak, n_ticks, path)
+    series = {} # label -> (ts, ys)
+    skipped = []
     for path in files:
         label, sigma = label_for(path)
-        ts, ys = load_harm_log(path)
+        try:
+            ts, ys = load_harm_log(path)
+        except Exception as e:
+            print(f"  {path}: parse error {e}", file=sys.stderr)
+            skipped.append((path, f"parse error: {e}"))
+            continue
         if not ts:
-            print(f"  {path}: empty", file=sys.stderr)
+            skipped.append((path, "empty"))
             continue
         integral = trapezoid(ts, ys)
         peak = max(ys)
         rows.append((sigma, label, integral, peak, len(ts), path))
         series[label] = (ts, ys)
+
+    if not rows:
+        print(f"\nAll {len(files)} matching files were empty or unreadable.",
+              file=sys.stderr)
+        for path, why in skipped:
+            print(f"  {path}: {why}", file=sys.stderr)
+        return 1
+    if skipped:
+        print(f"Skipped {len(skipped)} file(s):", file=sys.stderr)
+        for path, why in skipped:
+            print(f"  {path}: {why}", file=sys.stderr)
 
     # Sort: baseline first, then σ values ascending, then others alphabetically.
     def sort_key(r):

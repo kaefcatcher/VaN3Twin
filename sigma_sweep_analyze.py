@@ -35,12 +35,32 @@ from collections import defaultdict
 
 
 def load_harm_log(path: str):
-    """Return (sorted_times, sum_per_tick) for one CSV."""
-    sums: dict[float, float] = defaultdict(float)
+    """Parse a HARM log.
+
+    Returns (ts, harm_sum, gap_min, ttc_min, energy_peak) where:
+      ts            sorted list of tick times
+      harm_sum[t]   Σ pairwise harm at tick t
+      gap_min[t]    minimum pair-gap at tick t (or 1e9 if no rows)
+      ttc_min[t]    minimum pair-TTC at tick t (or 1e9 if no rows)
+      energy_peak[t] maximum pair-collision-energy at tick t
+
+    Backward-compatible: if the CSV has only the legacy 4 columns
+    (time,car1ID,car2ID,harm), gap/ttc/energy fall back to sentinels.
+    """
+    INF = 1e9
+    harm_sum: dict[float, float] = defaultdict(float)
+    gap_min: dict[float, float] = defaultdict(lambda: INF)
+    ttc_min: dict[float, float] = defaultdict(lambda: INF)
+    energy_peak: dict[float, float] = defaultdict(float)
     with open(path, "r") as f:
-        header = f.readline()
-        if not header.lower().startswith("time"):
+        header = f.readline().strip().lower().split(",")
+        if not header or header[0] != "time":
             raise ValueError(f"{path}: unexpected header {header!r}")
+        # column indexes (negative if absent)
+        idx_harm = header.index("harm") if "harm" in header else -1
+        idx_gap = header.index("gap") if "gap" in header else -1
+        idx_ttc = header.index("ttc") if "ttc" in header else -1
+        idx_energy = header.index("energy") if "energy" in header else -1
         for line in f:
             line = line.strip()
             if not line:
@@ -50,14 +70,42 @@ def load_harm_log(path: str):
                 continue
             try:
                 t = float(parts[0])
-                h = float(parts[3])
             except ValueError:
                 continue
-            sums[t] += h
-    if not sums:
-        return [], []
-    ts = sorted(sums)
-    return ts, [sums[t] for t in ts]
+            if idx_harm >= 0 and idx_harm < len(parts):
+                try:
+                    harm_sum[t] += float(parts[idx_harm])
+                except ValueError:
+                    pass
+            if idx_gap >= 0 and idx_gap < len(parts):
+                try:
+                    g = float(parts[idx_gap])
+                    if g < gap_min[t]:
+                        gap_min[t] = g
+                except ValueError:
+                    pass
+            if idx_ttc >= 0 and idx_ttc < len(parts):
+                try:
+                    tt = float(parts[idx_ttc])
+                    if tt < ttc_min[t]:
+                        ttc_min[t] = tt
+                except ValueError:
+                    pass
+            if idx_energy >= 0 and idx_energy < len(parts):
+                try:
+                    e = float(parts[idx_energy])
+                    if e > energy_peak[t]:
+                        energy_peak[t] = e
+                except ValueError:
+                    pass
+    if not harm_sum:
+        return [], [], [], [], []
+    ts = sorted(harm_sum)
+    return (ts,
+            [harm_sum[t] for t in ts],
+            [gap_min[t] for t in ts],
+            [ttc_min[t] for t in ts],
+            [energy_peak[t] for t in ts])
 
 
 def trapezoid(xs, ys) -> float:
@@ -96,13 +144,13 @@ def main() -> int:
         print(f"No files matched {args.glob}", file=sys.stderr)
         return 1
 
-    rows = []   # (sigma_or_None, label, integral, peak, n_ticks, path)
-    series = {} # label -> (ts, ys)
+    rows = []   # tuple per run, see fields below
+    series = {} # label -> (ts, harm, gap, ttc, energy)
     skipped = []
     for path in files:
         label, sigma = label_for(path)
         try:
-            ts, ys = load_harm_log(path)
+            ts, harm, gap, ttc, energy = load_harm_log(path)
         except Exception as e:
             print(f"  {path}: parse error {e}", file=sys.stderr)
             skipped.append((path, f"parse error: {e}"))
@@ -110,10 +158,17 @@ def main() -> int:
         if not ts:
             skipped.append((path, "empty"))
             continue
-        integral = trapezoid(ts, ys)
-        peak = max(ys)
-        rows.append((sigma, label, integral, peak, len(ts), path))
-        series[label] = (ts, ys)
+        # Reduce per-tick series to per-run scalars.
+        harm_int = trapezoid(ts, harm)
+        harm_peak = max(harm) if harm else 0.0
+        # gap/ttc are "min over pairs at each tick"; take min over time too.
+        # If the column was absent the loader fills with 1e9 sentinels.
+        gap_min = min(gap) if gap else 1e9
+        ttc_min = min(ttc) if ttc else 1e9
+        energy_peak = max(energy) if energy else 0.0
+        rows.append((sigma, label, harm_int, harm_peak,
+                     gap_min, ttc_min, energy_peak, len(ts), path))
+        series[label] = (ts, harm, gap, ttc, energy)
 
     if not rows:
         print(f"\nAll {len(files)} matching files were empty or unreadable.",
@@ -136,18 +191,53 @@ def main() -> int:
         return (2, 0.0, label)
     rows.sort(key=sort_key)
 
-    baseline_integral = next((r[2] for r in rows if r[1] == "baseline"), None)
+    baseline_int = next((r[2] for r in rows if r[1] == "baseline"), None)
+    baseline_gap = next((r[4] for r in rows if r[1] == "baseline"), None)
+    baseline_ttc = next((r[5] for r in rows if r[1] == "baseline"), None)
+    baseline_energy = next((r[6] for r in rows if r[1] == "baseline"), None)
 
     # Print comparison table.
-    print(f"{'label':<14} {'integral':>12} {'peak':>10} {'ticks':>7}  {'Δvs baseline':>14}")
-    print("-" * 64)
-    for sigma, label, integral, peak, ntick, _ in rows:
-        delta_str = ""
-        if baseline_integral is not None and label != "baseline":
-            delta = integral - baseline_integral
-            pct = (delta / baseline_integral * 100.0) if baseline_integral else 0.0
-            delta_str = f"{delta:+.2f} ({pct:+.1f}%)"
-        print(f"{label:<14} {integral:>12.3f} {peak:>10.3f} {ntick:>7d}  {delta_str:>14}")
+    # harm_int          smaller = less momentum-imbalance over time (paper formula 3)
+    # harm_peak         worst single-tick total
+    # gap_min           closest the worst pair ever got (m) — smaller = closer to crash
+    # ttc_min           shortest time-to-collision (s) — smaller = riskier
+    # energy_peak       worst-case plastic-collision energy (J) at any tick
+    hdr = (f"{'label':<14} {'harm_int':>10} {'harm_pk':>9} "
+           f"{'gap_min':>8} {'ttc_min':>8} {'energy_pk':>10} {'ticks':>6}")
+    print(hdr)
+    print("-" * len(hdr))
+    for r in rows:
+        sigma, label, harm_int, harm_pk, gap_min, ttc_min, energy_pk, ntick, _ = r
+        def _fmt(v, scale):
+            return "—" if v is None else f"{v / scale:>.3f}" if False else f"{v:.3f}"
+        gap_str = "—" if gap_min >= 1e9 else f"{gap_min:.3f}"
+        ttc_str = "—" if ttc_min >= 1e9 else f"{ttc_min:.3f}"
+        print(f"{label:<14} {harm_int:>10.3f} {harm_pk:>9.3f} "
+              f"{gap_str:>8} {ttc_str:>8} {energy_pk:>10.3f} {ntick:>6d}")
+    print()
+
+    # Best-σ summary: rank σ runs by each metric and call out the winner.
+    sigma_rows = [r for r in rows if r[1] != "baseline"]
+    if sigma_rows and baseline_int is not None:
+        print("Algorithm vs baseline (smaller = safer for gap_min/ttc_min,")
+        print("                       smaller = better for harm_int/energy_pk):")
+        for r in sigma_rows:
+            sigma, label, harm_int, harm_pk, gap_min, ttc_min, energy_pk, *_ = r
+            def _delta(value, base, lower_is_better):
+                if base is None or base == 0:
+                    return ""
+                if value is None or value >= 1e9 or base >= 1e9:
+                    return ""
+                d = value - base
+                pct = d / base * 100.0
+                sign = "↓" if (d < 0) == lower_is_better else "↑"
+                return f"{sign}{abs(pct):.0f}%"
+            print(f"  {label:<14}  "
+                  f"harm_int {_delta(harm_int, baseline_int, True):>7}  "
+                  f"gap_min  {_delta(gap_min, baseline_gap, False):>7}  "
+                  f"ttc_min  {_delta(ttc_min, baseline_ttc, False):>7}  "
+                  f"energy_pk {_delta(energy_pk, baseline_energy, True):>7}")
+    print()
 
     if args.plot:
         try:
@@ -155,17 +245,27 @@ def main() -> int:
         except ImportError:
             print("matplotlib not available; skipping --plot", file=sys.stderr)
             return 0
-        fig, ax = plt.subplots(figsize=(9, 5))
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
         for sigma, label, *_ in rows:
-            ts, ys = series[label]
-            ax.plot(ts, ys, label=label, linewidth=1.0)
-        ax.set_xlabel("Time [s]")
-        ax.set_ylabel("Σ pairwise HARM [m/s]")
-        ax.set_title("Pairwise HARM, baseline vs σ sweep")
-        ax.legend(loc="best", fontsize=8)
-        ax.grid(True, alpha=0.3)
-        out = "sigma_sweep_harm.png"
+            ts, harm, gap, ttc, energy = series[label]
+            axes[0, 0].plot(ts, harm,   label=label, linewidth=1.0)
+            axes[0, 1].plot(ts, gap,    label=label, linewidth=1.0)
+            axes[1, 0].plot(ts, ttc,    label=label, linewidth=1.0)
+            axes[1, 1].plot(ts, energy, label=label, linewidth=1.0)
+        axes[0, 0].set_title("Σ pairwise HARM (momentum diff)")
+        axes[0, 0].set_ylabel("HARM")
+        axes[0, 1].set_title("min pair-gap")
+        axes[0, 1].set_ylabel("m")
+        axes[1, 0].set_title("min pair-TTC (capped)")
+        axes[1, 0].set_ylabel("s"); axes[1, 0].set_yscale("log")
+        axes[1, 1].set_title("peak collision energy (½μΔv²)")
+        axes[1, 1].set_ylabel("J")
+        for ax in axes.flat:
+            ax.set_xlabel("time [s]")
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc="best", fontsize=7)
         fig.tight_layout()
+        out = "sigma_sweep_harm.png"
         fig.savefig(out, dpi=120)
         print(f"plot saved to {out}")
 

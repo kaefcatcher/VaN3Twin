@@ -19,6 +19,9 @@
 */
 
 #include "denBasicService.h"
+
+#include <iostream>
+
 #include "ns3/Seq.hpp"
 #include "ns3/Getter.hpp"
 #include "ns3/Setter.hpp"
@@ -568,7 +571,26 @@ namespace ns3 {
 
     /* 6. 7. Construct DENM and pass it to the lower layers (now UDP, in the future BTP and GeoNetworking, then UDP) */
     /** Encoding **/
-    std::string encode_result = asn1cpp::uper::encode(denm);
+    // Bypass asn1cpp::uper::encode so we can inspect the er.failed_type pointer
+    // on failure — the high-level helper hides it. Knowing exactly which ASN.1
+    // type rejected the value is the fastest way to find the wrong field.
+    std::string encode_result;
+    {
+      auto er = uper_encode (
+          denm.getTypeDescriptor (), nullptr,
+          (void *) (&*denm),
+          asn1cpp::Impl::fill, &encode_result);
+      if (er.encoded < 0)
+        {
+          std::cerr << "[DEN ENCODE-FAIL] station=" << m_station_id
+                    << " action=(" << actionid.originatingStationID << ","
+                    << actionid.sequenceNumber << ")"
+                    << " failed_type="
+                    << (er.failed_type ? er.failed_type->name : "<null>")
+                    << std::endl;
+          encode_result.clear ();
+        }
+    }
 
     if(encode_result.size()<1)
     {

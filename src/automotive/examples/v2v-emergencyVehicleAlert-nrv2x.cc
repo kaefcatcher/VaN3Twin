@@ -150,6 +150,10 @@ main (int argc, char *argv[])
   double stationarySpeed = 1.0;             // m/s
   double wasMovingSpeed = 5.0;              // m/s, hysteresis floor
 
+  // Custom alacarte extension fields. Off by default — they're a
+  // suspect for UPER encode failures.
+  bool includeEthicalAlacarte = false;
+
   xmlDocPtr rou_xml_file;
   double m_baseline_prr = config.value("m_baseline_prr", 150.0);
   bool m_metric_sup = config.value("m_metric_sup", false);
@@ -226,6 +230,7 @@ main (int argc, char *argv[])
     speedDropThreshold     = config.value("speed_drop_threshold", speedDropThreshold);
     stationarySpeed        = config.value("stationary_speed", stationarySpeed);
     wasMovingSpeed         = config.value("was_moving_speed", wasMovingSpeed);
+    includeEthicalAlacarte = config.value("include_ethical_alacarte", includeEthicalAlacarte);
 
     NS_LOG_INFO("Configuration loaded from JSON");
   }
@@ -269,6 +274,7 @@ main (int argc, char *argv[])
   cmd.AddValue ("speed-drop-threshold", "Speed drop (m/s) within 1 s that triggers slowVehicle DENM", speedDropThreshold);
   cmd.AddValue ("stationary-speed", "Speed (m/s) below which vehicle is considered stopped", stationarySpeed);
   cmd.AddValue ("was-moving-speed", "Speed (m/s) the vehicle must have exceeded before stationary fires", wasMovingSpeed);
+  cmd.AddValue ("include-ethical-alacarte", "Include custom ethical extension fields in DENM alacarte (off by default while bisecting UPER failures)", includeEthicalAlacarte);
 
   cmd.AddValue ("simTime",
                 "Simulation time in seconds",
@@ -801,6 +807,7 @@ main (int argc, char *argv[])
   EmergencyVehicleAlertHelper.SetAttribute ("SpeedDropThreshold", DoubleValue (speedDropThreshold));
   EmergencyVehicleAlertHelper.SetAttribute ("StationarySpeed", DoubleValue (stationarySpeed));
   EmergencyVehicleAlertHelper.SetAttribute ("WasMovingSpeed", DoubleValue (wasMovingSpeed));
+  EmergencyVehicleAlertHelper.SetAttribute ("IncludeEthicalAlacarte", BooleanValue (includeEthicalAlacarte));
 
   /* callback function for node creation */
   int i=0;

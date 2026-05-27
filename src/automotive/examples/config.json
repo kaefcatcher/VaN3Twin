@@ -42,5 +42,7 @@
   "stationary_speed": 1.0,
   "was_moving_speed": 5.0,
 
+  "include_ethical_alacarte": false,
+
   "csv_name_cumulative": "res"
 }

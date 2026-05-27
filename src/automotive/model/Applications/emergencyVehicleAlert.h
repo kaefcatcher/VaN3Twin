@@ -198,6 +198,7 @@ private:
   double m_vehicle_mass;             // kg, default 1500.0
   bool m_ethical_braking_enabled;
   bool m_cooperative_detection_enabled;
+  bool m_include_ethical_alacarte;   // wrap custom extension fields in DENM alacarte
 
   /* Lenient triggers (ETSI cause 26 slowVehicle / 94 stationaryVehicle).
      These fire from a single vehicle's own kinematics — no leader or gap

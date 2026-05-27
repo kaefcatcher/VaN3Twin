@@ -181,7 +181,16 @@ emergencyVehicleAlert::GetTypeId (void)
               "report is allowed. Prevents reporting a never-moved vehicle as stationary.",
               DoubleValue (5.0),
               MakeDoubleAccessor (&emergencyVehicleAlert::m_was_moving_speed),
-              MakeDoubleChecker<double> ());
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "IncludeEthicalAlacarte",
+              "If true, populate the custom alacarte extension fields (ethicalMaxDeceleration, "
+              "ethicalBrakingStartTime, ethicalVehicleMass) on DENMs sent when CooperativeDetection "
+              "or EthicalBraking is on. Set false to fall back to a strict ETSI EN 302 637-3 "
+              "alacarte container — use this to bisect UPER encoder failures.",
+              BooleanValue (false),
+              MakeBooleanAccessor (&emergencyVehicleAlert::m_include_ethical_alacarte),
+              MakeBooleanChecker ());
   return tid;
 }
 
@@ -211,6 +220,7 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_vehicle_mass = 1500.0;
   m_ethical_braking_enabled = false;
   m_cooperative_detection_enabled = false;
+  m_include_ethical_alacarte = false;
   m_send_denm = true;
   m_sigma_mode = "computed";
   m_fixed_sigma = 0.5;
@@ -1287,8 +1297,21 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
                << " TRIGGER cause=" << causeCode << "/" << subCauseCode);
 
   // Get real coordinates from SUMO
-  libsumo::TraCIPosition pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
-  pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (pos.x, pos.y);
+  libsumo::TraCIPosition posXY = m_client->TraCIAPI::vehicle.getPosition (m_id);
+  libsumo::TraCIPosition pos =
+      m_client->TraCIAPI::simulation.convertXYtoLonLat (posXY.x, posXY.y);
+
+  // Unconditional trace so we can see exactly what convertXYtoLonLat
+  // returned and what gets multiplied by DOT_ONE_MICRO before going to
+  // ASN.1. If SUMO has no working projection (projParameter="!"), pos.x
+  // and pos.y here will be the raw SUMO metres and the encoded
+  // longitude blows past the ASN.1 1.8·10⁹ limit.
+  std::cout << "[EVA-TRIGGER " << Simulator::Now ().GetSeconds () << "s] " << m_id
+            << " XY=(" << posXY.x << "," << posXY.y << ")"
+            << " LonLat=(" << pos.x << "," << pos.y << ")"
+            << " latEnc=" << (long) (pos.y * DOT_ONE_MICRO)
+            << " lonEnc=" << (long) (pos.x * DOT_ONE_MICRO)
+            << std::endl;
 
   // Detection time: the time at which the event was originally detected.
   // Capture it once here and reuse it through UpdateDenm/TerminateDenm so the
@@ -1343,8 +1366,16 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
   data.setDenmAlacarteVehicleMass ((long) m_vehicle_mass);
   data.setDenmAlacarteLanePosition ((long) m_client->TraCIAPI::vehicle.getLanePosition (m_id));
 
-  // Set ethical V2X custom fields if enabled
-  if (m_ethical_braking_enabled || m_cooperative_detection_enabled)
+  // The ethical extension fields (ethicalMaxDeceleration,
+  // ethicalBrakingStartTime, ethicalVehicleMass) are *custom*
+  // additions to the alacarte container — not in the original ETSI
+  // EN 302 637-3 spec — added by hand to the generated ASN.1 C
+  // descriptor. If the asn1c PER extension wiring is incomplete, the
+  // UPER encoder rejects the whole DENM. IncludeEthicalAlacarte
+  // defaults off so basic DENMs always encode; turn it on once the
+  // extension is known good.
+  if ((m_ethical_braking_enabled || m_cooperative_detection_enabled)
+      && m_include_ethical_alacarte)
     {
       double max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
       data.setDenmAlacarteMaxDeceleration (max_decel);
@@ -1456,7 +1487,8 @@ emergencyVehicleAlert::UpdateDenm (DEN_ActionID actionid)
   data.setDenmAlacarteVehicleMass ((long) m_vehicle_mass);
   data.setDenmAlacarteLanePosition ((long) m_client->TraCIAPI::vehicle.getLanePosition (m_id));
 
-  if (m_ethical_braking_enabled || m_cooperative_detection_enabled)
+  if ((m_ethical_braking_enabled || m_cooperative_detection_enabled)
+      && m_include_ethical_alacarte)
     {
       double max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
       data.setDenmAlacarteMaxDeceleration (max_decel);

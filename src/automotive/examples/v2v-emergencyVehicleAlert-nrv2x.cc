@@ -155,8 +155,8 @@ main (int argc, char *argv[])
   bool includeEthicalAlacarte = false;
 
   // Fraction of max_decel that V3 applies in the chain / rear cooperative
-  // branch. 1.0 = strict paper behaviour. 0.7 keeps V3 in sync with V2.
-  double chainBrakeFraction = 0.7;
+  // branch. 1.0 = paper-strict; reduce to keep V3 from out-braking V2.
+  double chainBrakeFraction = 1.0;
 
   xmlDocPtr rou_xml_file;
   double m_baseline_prr = config.value("m_baseline_prr", 150.0);

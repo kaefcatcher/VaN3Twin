@@ -194,10 +194,10 @@ emergencyVehicleAlert::GetTypeId (void)
           .AddAttribute (
               "ChainBrakeFraction",
               "Fraction of the vehicle's max deceleration to apply in V3's chain / rear "
-              "cooperative branch. Paper's V3 brakes at max (1.0), but that out-brakes V2's "
-              "softer optimal_a2 and the V2↔V3 gap closes — inflating pairwise HARM without "
-              "preventing any collision. 0.7 keeps V3 roughly in sync with V2.",
-              DoubleValue (0.7),
+              "cooperative branch. 1.0 = paper-strict (V3 brakes at max). Values <1 trade "
+              "collision-prevention margin for keeping V3's brake in sync with V2's softer "
+              "optimal_a2 (avoids the V2↔V3 transient closing-gap).",
+              DoubleValue (1.0),
               MakeDoubleAccessor (&emergencyVehicleAlert::m_chain_brake_fraction),
               MakeDoubleChecker<double> ());
   return tid;
@@ -230,7 +230,7 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_ethical_braking_enabled = false;
   m_cooperative_detection_enabled = false;
   m_include_ethical_alacarte = false;
-  m_chain_brake_fraction = 0.7;
+  m_chain_brake_fraction = 1.0;
   m_send_denm = true;
   m_sigma_mode = "computed";
   m_fixed_sigma = 0.5;

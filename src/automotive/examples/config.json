@@ -43,7 +43,7 @@
   "was_moving_speed": 5.0,
 
   "include_ethical_alacarte": false,
-  "chain_brake_fraction": 0.7,
+  "chain_brake_fraction": 1.0,
 
   "csv_name_cumulative": "res"
 }

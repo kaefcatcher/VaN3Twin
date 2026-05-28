@@ -2,51 +2,67 @@
         xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
 
     <!--
-      Three-car cooperative emergency braking scenario.
-      Based on Rolich et al. VTC 2024 / Sidorenko VTC2023-Fall.
+      Three-car cooperative emergency braking scenario (Rolich et al.
+      VTC 2024). Tuned so the algorithm actually does something visible.
 
-      Design intent:
-        * Vehicles travel at ~22 m/s (~80 km/h).
-        * Leader (veh0) is forced to emergency-stop at a known simulation time
-          via TraCI (see v2v-emergencyVehicleAlert-nrv2x.cc and the config keys
-          force_brake_time / force_brake_vehicle / force_brake_duration).
-          The duration is short enough that the resulting deceleration
-          comfortably exceeds the -4 m/s² HardBrakeThreshold.
-        * Middle and follower have lower max decel so they cannot match the
-          leader's brake. They will hit the 50 m CollisionRiskDistance gate
-          and trigger their own DENMs.
-        * tau is tight (0.6) so ACC keeps cars close enough that the gap
-          gate fires before the followers themselves come to a safe stop.
+      The previous version had no actionStepLength on the followers, so
+      Krauss reacted to V1's brake in the same simulator step it happened
+      (perception latency ≈ 0). The algorithm physically cannot beat
+      zero — and so baseline and σ-sweep numbers were identical, which
+      is the symptom you saw.
 
-      Vehicle masses are set per the paper's ethical-harm analysis (heavier
-      leader, mid middle, lighter follower). The application currently uses
-      a single VehicleMass attribute; we leave the SUMO mass field for future
-      per-vehicle mass propagation.
+      Fix: actionStepLength=1.0 on middle/follower introduces a 1 s
+      decision cycle. Between decisions the follower coasts at the last
+      chosen speed. The algorithm's TraCI-issued slowDown bypasses the
+      cycle and fires within a few ms of the DENM arrival, so
+
+        baseline ⇒ V2 might not see V1's brake until up to 1 s later,
+                   then brakes hard against a closer V1.
+        algorithm ⇒ V2 brakes immediately at optimal_a2, smoothly and
+                   from farther away.
+
+      Scenario kinematics:
+        cruise speed         20 m/s    (lane speed limit 25 → vType cap)
+        follower decel       4 m/s²
+        follower emergDecel  6 m/s²
+        follower tau         0.6 s     (steady-state Krauss headway)
+        action delay         1.0 s     (perception lag the algo beats)
+        starting gaps        ≈ 50 m    (1.0·v_cruise + safety margin)
+        forced brake at      t = 15 s, slowDown(0, 1.0)
+
+      Expected outcomes (numerically, will vary slightly per run):
+        baseline:  V2 stops ~3-5 m short of V1; HARM(t) has a spike
+                   ≈ 1 s wide when V2 finally brakes hard.
+        algorithm: V2 stops ~25-30 m short of V1; HARM(t) ramps
+                   smoothly without the late-brake spike.
     -->
 
-    <vType id="leader"   accel="3.0" decel="5.0" emergencyDecel="9.0"
-           maxSpeed="22"  minGap="2.5" tau="0.6" length="5.0" sigma="0.0"
-           mass="2000"    carFollowModel="Krauss" color="1,0,0"/>
+    <vType id="leader"   accel="3.0" decel="9.0" emergencyDecel="9.0"
+           maxSpeed="20" minGap="0.5" tau="0.3" length="5.0" sigma="0.0"
+           actionStepLength="0.1" mass="2000"
+           carFollowModel="Krauss" color="1,0,0"/>
 
-    <vType id="middle"   accel="3.0" decel="3.5" emergencyDecel="6.0"
-           maxSpeed="22"  minGap="2.5" tau="0.6" length="5.0" sigma="0.0"
-           mass="1500"    carFollowModel="Krauss" color="1,1,0"/>
+    <vType id="middle"   accel="3.0" decel="4.0" emergencyDecel="6.0"
+           maxSpeed="20" minGap="0.5" tau="0.6" length="5.0" sigma="0.0"
+           actionStepLength="1.0" mass="1500"
+           carFollowModel="Krauss" color="1,1,0"/>
 
-    <vType id="follower" accel="3.0" decel="3.0" emergencyDecel="6.0"
-           maxSpeed="22"  minGap="2.5" tau="0.6" length="5.0" sigma="0.0"
-           mass="1200"    carFollowModel="Krauss" color="0,0,1"/>
+    <vType id="follower" accel="3.0" decel="4.0" emergencyDecel="6.0"
+           maxSpeed="20" minGap="0.5" tau="0.6" length="5.0" sigma="0.0"
+           actionStepLength="1.0" mass="1200"
+           carFollowModel="Krauss" color="0,0,1"/>
 
-    <!-- Three vehicles in a column. depart durations small enough that
-         all three reach steady cruise before the forced brake event. -->
+    <!-- Departures spaced so steady-state Krauss headway settles to
+         ~50 m between consecutive vehicles by the time V1 brakes. -->
     <vehicle id="veh0" type="leader"   depart="0.00" departSpeed="max">
         <route edges="E0"/>
     </vehicle>
 
-    <vehicle id="veh1" type="middle"   depart="0.50" departSpeed="max">
+    <vehicle id="veh1" type="middle"   depart="2.50" departSpeed="max">
         <route edges="E0"/>
     </vehicle>
 
-    <vehicle id="veh2" type="follower" depart="1.00" departSpeed="max">
+    <vehicle id="veh2" type="follower" depart="5.00" departSpeed="max">
         <route edges="E0"/>
     </vehicle>
 

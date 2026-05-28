@@ -217,6 +217,7 @@ private:
   bool m_stationary_already_reported = false;
   std::string m_sigma_mode;          // "computed" | "fixed" | "scaled"
   double m_fixed_sigma;              // seconds (fixed) or multiplier (scaled)
+  double m_chain_brake_fraction;     // fraction of max_decel applied in V3 chain/rear branch
 
   /* Cooperative braking state */
   CooperativeBrakingState m_coopBraking;

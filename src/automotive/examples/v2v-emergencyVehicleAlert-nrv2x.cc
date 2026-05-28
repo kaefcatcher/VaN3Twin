@@ -154,6 +154,10 @@ main (int argc, char *argv[])
   // suspect for UPER encode failures.
   bool includeEthicalAlacarte = false;
 
+  // Fraction of max_decel that V3 applies in the chain / rear cooperative
+  // branch. 1.0 = strict paper behaviour. 0.7 keeps V3 in sync with V2.
+  double chainBrakeFraction = 0.7;
+
   xmlDocPtr rou_xml_file;
   double m_baseline_prr = config.value("m_baseline_prr", 150.0);
   bool m_metric_sup = config.value("m_metric_sup", false);
@@ -231,6 +235,7 @@ main (int argc, char *argv[])
     stationarySpeed        = config.value("stationary_speed", stationarySpeed);
     wasMovingSpeed         = config.value("was_moving_speed", wasMovingSpeed);
     includeEthicalAlacarte = config.value("include_ethical_alacarte", includeEthicalAlacarte);
+    chainBrakeFraction     = config.value("chain_brake_fraction", chainBrakeFraction);
 
     NS_LOG_INFO("Configuration loaded from JSON");
   }
@@ -275,6 +280,7 @@ main (int argc, char *argv[])
   cmd.AddValue ("stationary-speed", "Speed (m/s) below which vehicle is considered stopped", stationarySpeed);
   cmd.AddValue ("was-moving-speed", "Speed (m/s) the vehicle must have exceeded before stationary fires", wasMovingSpeed);
   cmd.AddValue ("include-ethical-alacarte", "Include custom ethical extension fields in DENM alacarte (off by default while bisecting UPER failures)", includeEthicalAlacarte);
+  cmd.AddValue ("chain-brake-fraction", "Fraction of max_decel V3 uses in the chain/rear branch (1.0 = paper-strict, 0.7 = default)", chainBrakeFraction);
 
   cmd.AddValue ("simTime",
                 "Simulation time in seconds",
@@ -808,6 +814,7 @@ main (int argc, char *argv[])
   EmergencyVehicleAlertHelper.SetAttribute ("StationarySpeed", DoubleValue (stationarySpeed));
   EmergencyVehicleAlertHelper.SetAttribute ("WasMovingSpeed", DoubleValue (wasMovingSpeed));
   EmergencyVehicleAlertHelper.SetAttribute ("IncludeEthicalAlacarte", BooleanValue (includeEthicalAlacarte));
+  EmergencyVehicleAlertHelper.SetAttribute ("ChainBrakeFraction", DoubleValue (chainBrakeFraction));
 
   /* callback function for node creation */
   int i=0;
@@ -884,6 +891,34 @@ main (int argc, char *argv[])
             catch (const std::exception &e)
               {
                 std::cerr << "FORCED BRAKE failed: " << e.what () << std::endl;
+              }
+          });
+
+      // After the slowDown completes, cap the vehicle's max speed at the
+      // target speed so SUMO doesn't let it accelerate back to free flow.
+      // For target=0 this keeps V1 parked at its stop position for the
+      // rest of the simulation — which is what makes the scenario a real
+      // collision-risk test and not a "brake briefly and resume" anti-test.
+      Simulator::Schedule (
+          Seconds (forceBrakeTime + forceBrakeDuration),
+          [sumoClient, forceBrakeVehicle, forceBrakeTargetSpeed] () {
+            try
+              {
+                NS_LOG_UNCOND ("[" << Simulator::Now ().GetSeconds ()
+                               << "s] FORCED BRAKE: " << forceBrakeVehicle
+                               << " setMaxSpeed=" << forceBrakeTargetSpeed
+                               << " (stays parked)");
+                sumoClient->TraCIAPI::vehicle.setMaxSpeed (
+                    forceBrakeVehicle, std::max (forceBrakeTargetSpeed, 0.001));
+                // Belt-and-braces: also explicitly setSpeed(target). This
+                // makes the vehicle freeze at the target speed regardless
+                // of what its car-follower model would have decided.
+                sumoClient->TraCIAPI::vehicle.setSpeed (
+                    forceBrakeVehicle, forceBrakeTargetSpeed);
+              }
+            catch (const std::exception &e)
+              {
+                std::cerr << "FORCED BRAKE post-stop failed: " << e.what () << std::endl;
               }
           });
     }

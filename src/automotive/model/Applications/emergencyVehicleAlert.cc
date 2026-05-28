@@ -190,7 +190,16 @@ emergencyVehicleAlert::GetTypeId (void)
               "alacarte container — use this to bisect UPER encoder failures.",
               BooleanValue (false),
               MakeBooleanAccessor (&emergencyVehicleAlert::m_include_ethical_alacarte),
-              MakeBooleanChecker ());
+              MakeBooleanChecker ())
+          .AddAttribute (
+              "ChainBrakeFraction",
+              "Fraction of the vehicle's max deceleration to apply in V3's chain / rear "
+              "cooperative branch. Paper's V3 brakes at max (1.0), but that out-brakes V2's "
+              "softer optimal_a2 and the V2↔V3 gap closes — inflating pairwise HARM without "
+              "preventing any collision. 0.7 keeps V3 roughly in sync with V2.",
+              DoubleValue (0.7),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_chain_brake_fraction),
+              MakeDoubleChecker<double> ());
   return tid;
 }
 
@@ -221,6 +230,7 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_ethical_braking_enabled = false;
   m_cooperative_detection_enabled = false;
   m_include_ethical_alacarte = false;
+  m_chain_brake_fraction = 0.7;
   m_send_denm = true;
   m_sigma_mode = "computed";
   m_fixed_sigma = 0.5;
@@ -2133,11 +2143,16 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
                        << " COOPERATIVE: rear vehicle role, braking at max decel="
                        << my_max_decel << " m/s^2");
 
-      double h_ahead = CalculateHarm (m_vehicle_mass, my_speed, my_max_decel,
+      // Scale V3's brake down so it doesn't out-brake V2's softer
+      // optimal_a2 and close the V2↔V3 gap. m_chain_brake_fraction
+      // defaults to 0.7; 1.0 == paper-strict behaviour.
+      double chain_decel = std::max (0.1, my_max_decel * m_chain_brake_fraction);
+
+      double h_ahead = CalculateHarm (m_vehicle_mass, my_speed, chain_decel,
                                       sender_mass, sender_speed, sender_max_decel, gap_to_leader);
 
       LogCooperativeDecision ("rear", cause_code, senderStationId,
-                              h_ahead, 0.0, h_ahead, my_max_decel, 0.0, false);
+                              h_ahead, 0.0, h_ahead, chain_decel, 0.0, false);
 
       // Paper algorithm 3 step 4: vehicle 3 generates a DENM toward vehicle 2
       // so the σ-budget loop can close. Sub-cause 2 marks it as a cooperative
@@ -2148,28 +2163,31 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
           m_is_event_active = true;
         }
 
-      ApplyCooperativeBraking (my_max_decel, false);
+      ApplyCooperativeBraking (chain_decel, false);
       return;
     }
 
   // === CASE: Received forwarded DENM about someone further ahead ===
   if (!originator_is_leader && !m_coopBraking.active)
     {
-      // I'm further back in the chain — treat as rear vehicle: brake at max
+      // I'm further back in the chain — treat as rear vehicle: brake at
+      // m_chain_brake_fraction × max_decel (see attribute doc).
       m_coopBraking.active = true;
       m_coopBraking.originatorStationId = originator_id;
       m_coopBraking.decisionMade = true;
 
+      double chain_decel = std::max (0.1, my_max_decel * m_chain_brake_fraction);
+
       NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                       << " COOPERATIVE: chain vehicle, braking at max decel="
-                       << my_max_decel << " m/s^2");
+                       << " COOPERATIVE: chain vehicle, braking at " << chain_decel
+                       << " m/s^2 (fraction=" << m_chain_brake_fraction << ")");
 
       double h_ahead = has_leader ?
-          CalculateHarm (m_vehicle_mass, my_speed, my_max_decel,
+          CalculateHarm (m_vehicle_mass, my_speed, chain_decel,
                          1500.0, leader_speed, leader_max_decel, gap_to_leader) : 0.0;
 
       LogCooperativeDecision ("chain", cause_code, senderStationId,
-                              h_ahead, 0.0, h_ahead, my_max_decel, 0.0, false);
+                              h_ahead, 0.0, h_ahead, chain_decel, 0.0, false);
 
       if (!m_is_event_active)
         {
@@ -2177,7 +2195,7 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
           m_is_event_active = true;
         }
 
-      ApplyCooperativeBraking (my_max_decel, false);
+      ApplyCooperativeBraking (chain_decel, false);
     }
 
     }

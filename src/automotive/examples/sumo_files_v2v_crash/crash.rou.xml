@@ -2,55 +2,64 @@
         xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
 
     <!--
-      Three-car scenario engineered so SUMO's car-follower CANNOT
-      prevent a collision when the leader emergency-brakes. The
-      cooperative algorithm should keep the followers from crashing;
-      the baseline should crash.
+      Three-car collision-risk scenario, tuned so the algorithm should
+      observably prevent a crash that the baseline cannot avoid.
 
-      Why each parameter:
-        decel=1.5         followers' max normal decel; far below the
-                          ~25 m/s² the leader will hit during its
-                          force_brake slowDown(0, 1.0)
-        emergencyDecel=2  the absolute hardest brake SUMO will apply
-                          (still much less than what's needed to stop
-                          from 25 m/s in the available distance)
-        minGap=0.1        tiny static gap — leaves no room for natural
-                          following safety margin
-        tau=0.2           short time headway — the followers cruise
-                          ~5 m behind, not enough to brake at 1.5 m/s²
-        sigma=0.0         deterministic driver behaviour (no random
-                          jitter) so every run is reproducible
-        carFollowModel=Krauss
-                          standard model — note that even Krauss can't
-                          avoid impact if the kinematics make it
-                          impossible
-        mass=2000/1500/1200
-                          per the paper's ethical-harm analysis (heavier
-                          leader, mid middle, lighter follower) so the
-                          collision-energy metric varies by pair
+      Mechanism:
+        SUMO's Krauss car-follower normally has *instantaneous*
+        perception — it detects a leader brake the moment it happens
+        and reacts in the next simulation step. That makes DENMs
+        useless: the algorithm can't beat zero perception latency.
+
+      Fix: actionStepLength on the followers.
+        actionStepLength = 1.5  means SUMO only updates the follower's
+        decision every 1.5 s. Between updates the follower coasts at
+        whatever speed it last chose. A leader brake at t=15 s isn't
+        "seen" by the follower until its next decision point, which
+        can be up to 1.5 s later. The follower then brakes at its
+        decel/emergencyDecel, but by then it's already 1.5*v_lead m
+        closer — typically enough to make the stop distance
+        impossible.
+
+        The algorithm bypasses this by calling slowDown via TraCI in
+        the V3 chain branch and V2 middle branch within milliseconds
+        of the DENM arrival, regardless of where the follower is in
+        its action cycle. That's the V2X advantage made concrete.
+
+      With initial speed 20 m/s and decel=4.0:
+        stop distance = 20² / (2·4) = 50 m
+        per-action-step travel = 1.5 · 20 = 30 m
+        starting gap ≈ 25 m
+        ⇒ baseline runs out of room (25 - 30 < 0); algorithm has
+          ~25 m to brake from 20 m/s, finishes with ~25 m to spare.
     -->
 
     <vType id="leader"   accel="3.0" decel="9.0" emergencyDecel="9.0"
-           maxSpeed="25" minGap="0.1" tau="0.2" length="5.0" sigma="0.0"
-           mass="2000" carFollowModel="Krauss" color="1,0,0"/>
+           maxSpeed="20" minGap="0.5" tau="0.3" length="5.0" sigma="0.0"
+           actionStepLength="0.1" mass="2000"
+           carFollowModel="Krauss" color="1,0,0"/>
 
-    <vType id="middle"   accel="3.0" decel="1.5" emergencyDecel="2.0"
-           maxSpeed="25" minGap="0.1" tau="0.2" length="5.0" sigma="0.0"
-           mass="1500" carFollowModel="Krauss" color="1,1,0"/>
+    <vType id="middle"   accel="3.0" decel="4.0" emergencyDecel="6.0"
+           maxSpeed="20" minGap="0.5" tau="0.3" length="5.0" sigma="0.0"
+           actionStepLength="1.5" mass="1500"
+           carFollowModel="Krauss" color="1,1,0"/>
 
-    <vType id="follower" accel="3.0" decel="1.5" emergencyDecel="2.0"
-           maxSpeed="25" minGap="0.1" tau="0.2" length="5.0" sigma="0.0"
-           mass="1200" carFollowModel="Krauss" color="0,0,1"/>
+    <vType id="follower" accel="3.0" decel="4.0" emergencyDecel="6.0"
+           maxSpeed="20" minGap="0.5" tau="0.3" length="5.0" sigma="0.0"
+           actionStepLength="1.5" mass="1200"
+           carFollowModel="Krauss" color="0,0,1"/>
 
+    <!-- Departure timing chosen so that at t=15 s when V1 brakes, the
+         column is in steady-state cruise at ~20 m/s with ~25 m gaps. -->
     <vehicle id="veh0" type="leader"   depart="0.00" departSpeed="max">
         <route edges="E0"/>
     </vehicle>
 
-    <vehicle id="veh1" type="middle"   depart="0.20" departSpeed="max">
+    <vehicle id="veh1" type="middle"   depart="1.30" departSpeed="max">
         <route edges="E0"/>
     </vehicle>
 
-    <vehicle id="veh2" type="follower" depart="0.40" departSpeed="max">
+    <vehicle id="veh2" type="follower" depart="2.60" departSpeed="max">
         <route edges="E0"/>
     </vehicle>
 

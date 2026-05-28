@@ -46,24 +46,8 @@ HarmLogger::Start ()
       NS_LOG_ERROR ("HarmLogger: cannot open " << m_output_file);
       return;
     }
-  // CSV schema:
-  //   time     simulator time (s)
-  //   car1ID   SUMO id of vehicle i (alphabetically first of the pair)
-  //   car2ID   SUMO id of vehicle j
-  //   harm     m2/(m1+m2) * |v1-v2|        — paper formula 3 (momentum-diff)
-  //   gap      Euclidean centre distance (m)
-  //   ttc      gap / |v1-v2| (s) if speeds differ, else 1e6 (capped)
-  //   energy   ½·μ·|v1-v2|²      (J)        — kinetic energy of a perfectly
-  //                                            inelastic collision at this Δv,
-  //                                            where μ = m1·m2/(m1+m2)
-  // The richer columns are needed because pairwise `harm` alone doesn't
-  // distinguish "two cars moving apart" from "two cars about to crash".
-  // For collision-risk analysis use min(ttc) and max(energy) per pair.
-  m_ofstream << "time,car1ID,car2ID,harm,gap,ttc,energy" << std::endl;
+  m_ofstream << "time,car1ID,car2ID,harm,energy" << std::endl;
 
-  // First tick fires one period in the future so SUMO has already
-  // stepped at least once and getIDList() is non-empty in the typical
-  // scenario.
   m_tick_event =
       Simulator::Schedule (Seconds (m_period_s), &HarmLogger::Tick, this);
 }
@@ -87,12 +71,9 @@ HarmLogger::Tick ()
     }
   catch (...)
     {
-      // SUMO may be tearing down at the very end of the simulation.
       return;
     }
 
-  // Snapshot positions and speeds once so we don't pay TraCI cost N²
-  // times per pair.
   struct Snap
   {
     std::string id;
@@ -122,8 +103,7 @@ HarmLogger::Tick ()
 
   const double t = Simulator::Now ().GetSeconds ();
   const double m = m_default_mass_kg;
-  const double mu = (m * m) / (m + m); // = m/2 with equal masses
-  const double TTC_CAP = 1e6;          // 1e6 s = effectively "no closure"
+  const double mu = (m * m) / (m + m);
   for (size_t i = 0; i < snap.size (); ++i)
     {
       for (size_t j = i + 1; j < snap.size (); ++j)
@@ -136,11 +116,9 @@ HarmLogger::Tick ()
           double dv = std::abs (snap[i].speed - snap[j].speed);
           double harm = appUtil_pairwiseHarm (m, snap[i].speed,
                                               m, snap[j].speed);
-          double ttc = (dv > 1e-6) ? (gap / dv) : TTC_CAP;
           double energy = 0.5 * mu * dv * dv;
           m_ofstream << t << ',' << snap[i].id << ',' << snap[j].id << ','
-                     << harm << ',' << gap << ',' << ttc << ',' << energy
-                     << '\n';
+                     << harm << ',' << energy << '\n';
         }
     }
   m_ofstream.flush ();

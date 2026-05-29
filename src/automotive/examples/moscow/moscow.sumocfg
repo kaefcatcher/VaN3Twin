@@ -1,0 +1,18 @@
+<configuration>
+
+    <input>
+        <net-file value="moscow.net.xml"/>
+        <route-files value="routes1000.rou.xml"/>
+    </input>
+
+    <time>
+        <begin value="0"/>
+        <end value="500"/>
+    </time>
+
+    <gui_only>
+        <delay value="0"/>
+        <start value="true"/>
+    </gui_only>
+
+</configuration>

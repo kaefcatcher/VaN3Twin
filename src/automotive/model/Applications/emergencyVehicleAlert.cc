@@ -26,6 +26,7 @@
 #include "ns3/socket.h"
 #include "ns3/network-module.h"
 #include "ns3/gn-utils.h"
+#include "ns3/harm-util.h"
 
 #define DEG_2_RAD(val) ((val) *M_PI / 180.0)
 
@@ -47,16 +48,8 @@ appUtil_haversineDist (double lat_a, double lon_a, double lat_b, double lon_b)
                          sin (DEG_2_RAD (lon_b - lon_a) / 2)));
 }
 
-// Pairwise HARM metric from Sidorenko et al. (VTC2023-Fall), formula (3):
-// H1 = m2/(m1+m2) * |delta_v|, where delta_v = v1 - v2
-double
-appUtil_pairwiseHarm (double m1, double v1, double m2, double v2)
-{
-  double totalMass = m1 + m2;
-  if (totalMass <= 0.0)
-    return 0.0;
-  return (m2 / totalMass) * std::abs (v1 - v2);
-}
+// appUtil_pairwiseHarm now lives in ns3/harm-util.h so both the
+// application and HarmLogger share one definition.
 
 // Function to compute the absolute difference between two angles (angles must be between -180 and 180)
 double
@@ -113,9 +106,14 @@ emergencyVehicleAlert::GetTypeId (void)
               "SendCPM", "To enable/disable the transmission of CPM messages", BooleanValue (true),
               MakeBooleanAccessor (&emergencyVehicleAlert::m_send_cpm), MakeBooleanChecker ())
           .AddAttribute (
+              "SendDENM", "To enable/disable DENM event triggering (hard brake, collision risk). "
+                          "Set false to produce a CAM-only baseline for comparison.",
+              BooleanValue (true),
+              MakeBooleanAccessor (&emergencyVehicleAlert::m_send_denm), MakeBooleanChecker ())
+          .AddAttribute (
               "HardBrakeThreshold",
               "Acceleration threshold (m/s^2) below which hard braking is detected",
-              DoubleValue (-1.0),
+              DoubleValue (-4.0),
               MakeDoubleAccessor (&emergencyVehicleAlert::m_hard_brake_threshold),
               MakeDoubleChecker<double> ())
           .AddAttribute (
@@ -147,7 +145,61 @@ emergencyVehicleAlert::GetTypeId (void)
               "Enable cooperative ethical braking algorithm based on harm minimization",
               BooleanValue (false),
               MakeBooleanAccessor (&emergencyVehicleAlert::m_cooperative_detection_enabled),
-              MakeBooleanChecker ());
+              MakeBooleanChecker ())
+          .AddAttribute (
+              "SigmaMode",
+              "How V2's decision-time budget σ is determined: 'computed' (default — derive "
+              "from CalculateDecisionBudget so H_{1,2}=0), 'fixed' (use FixedSigma directly), "
+              "or 'scaled' (multiply the computed value by FixedSigma).",
+              StringValue ("computed"),
+              MakeStringAccessor (&emergencyVehicleAlert::m_sigma_mode),
+              MakeStringChecker ())
+          .AddAttribute (
+              "FixedSigma",
+              "Override or scale for σ. Interpreted per SigmaMode. Unit: seconds (mode=fixed) "
+              "or unitless multiplier (mode=scaled). Ignored when SigmaMode='computed'.",
+              DoubleValue (0.5),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_fixed_sigma),
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "SpeedDropThreshold",
+              "Speed drop (m/s) within a 1 s window that triggers a slowVehicle (cause 26) DENM. "
+              "Single-vehicle trigger, fires independently of any leader.",
+              DoubleValue (3.0),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_speed_drop_threshold),
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "StationarySpeed",
+              "Speed (m/s) below which a previously-moving vehicle is considered stationary. "
+              "Triggers a stationaryVehicle (cause 94) DENM once per stop event.",
+              DoubleValue (1.0),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_stationary_speed),
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "WasMovingSpeed",
+              "Speed (m/s) the vehicle must have exceeded at some point before a stationary "
+              "report is allowed. Prevents reporting a never-moved vehicle as stationary.",
+              DoubleValue (5.0),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_was_moving_speed),
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "IncludeEthicalAlacarte",
+              "If true, populate the custom alacarte extension fields (ethicalMaxDeceleration, "
+              "ethicalBrakingStartTime, ethicalVehicleMass) on DENMs sent when CooperativeDetection "
+              "or EthicalBraking is on. Set false to fall back to a strict ETSI EN 302 637-3 "
+              "alacarte container — use this to bisect UPER encoder failures.",
+              BooleanValue (false),
+              MakeBooleanAccessor (&emergencyVehicleAlert::m_include_ethical_alacarte),
+              MakeBooleanChecker ())
+          .AddAttribute (
+              "ChainBrakeFraction",
+              "Fraction of the vehicle's max deceleration to apply in V3's chain / rear "
+              "cooperative branch. 1.0 = paper-strict (V3 brakes at max). Values <1 trade "
+              "collision-prevention margin for keeping V3's brake in sync with V2's softer "
+              "optimal_a2 (avoids the V2↔V3 transient closing-gap).",
+              DoubleValue (1.0),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_chain_brake_fraction),
+              MakeDoubleChecker<double> ());
   return tid;
 }
 
@@ -168,15 +220,29 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_distance_threshold = 75;
   m_heading_threshold = 45;
 
-  m_prev_speed = 0.0;
   m_is_event_active = false;
   m_active_action_id = {};
+  m_active_detection_time_ms = 0;
   m_hard_brake_threshold = -4.0;
-  m_collision_risk_distance = 20.0;
+  m_collision_risk_distance = 50.0;
   m_event_check_interval = 0.1;
   m_vehicle_mass = 1500.0;
   m_ethical_braking_enabled = false;
   m_cooperative_detection_enabled = false;
+  m_include_ethical_alacarte = false;
+  m_chain_brake_fraction = 1.0;
+  m_send_denm = true;
+  m_sigma_mode = "computed";
+  m_fixed_sigma = 0.5;
+  m_speed_drop_threshold = 3.0;
+  m_stationary_speed = 1.0;
+  m_was_moving_speed = 5.0;
+  for (int i = 0; i < SPEED_WINDOW_N; ++i)
+    m_speed_window[i] = 0.0;
+  m_speed_window_pos = 0;
+  m_speed_window_full = false;
+  m_has_been_moving = false;
+  m_stationary_already_reported = false;
 }
 
 emergencyVehicleAlert::~emergencyVehicleAlert ()
@@ -356,14 +422,35 @@ emergencyVehicleAlert::StartApplication (void)
   if (m_cooperative_detection_enabled && !m_csv_name.empty ())
     {
       m_csv_ofstream_coop.open (m_csv_name + "-" + m_id + "-COOP.csv", std::ofstream::trunc);
-      m_csv_ofstream_coop << "timestamp,vehicleId,role,causeCode,senderStationId,"
-                          << "harm12,harm23,harmTotal,deceleration,sigma,isOptimal" << std::endl;
+      m_csv_ofstream_coop
+          << "timestamp,vehicleId,role,causeCode,senderStationId,"
+          << "harm12,harm23,harmTotal,deceleration,sigma,rearDenmInSigma,"
+          << "sigmaMode,fixedSigmaAttr"
+          << std::endl;
     }
 
-  /* Initialize previous speed and schedule periodic event detection */
-  m_prev_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+  /* Cooperative summary counters */
+  m_coop_optimal_count = 0;
+  m_coop_suboptimal_count = 0;
+  m_coop_sigma_sum = 0.0;
+  m_coop_decel_sum = 0.0;
+
+  /* Schedule periodic event detection */
   m_event_check_ev = Simulator::Schedule (Seconds (m_event_check_interval),
                                            &emergencyVehicleAlert::CheckForEvents, this);
+
+  // Always-on startup line so the user can see the app actually started
+  // for this vehicle, regardless of log-level configuration.
+  std::cout << "[EVA-START " << Simulator::Now ().GetSeconds () << "s] " << m_id
+            << " send_denm=" << m_send_denm
+            << " coop=" << m_cooperative_detection_enabled
+            << " sigma_mode=" << m_sigma_mode
+            << " fixed_sigma=" << m_fixed_sigma
+            << " hbt=" << m_hard_brake_threshold
+            << " crd=" << m_collision_risk_distance
+            << " drop_thr=" << m_speed_drop_threshold
+            << " stationary_thr=" << m_stationary_speed
+            << std::endl;
 }
 
 void
@@ -400,6 +487,22 @@ emergencyVehicleAlert::StopApplication ()
                 << ",CPM-SENT: " << cpm_sent << ",CPM-RECEIVED: " << m_cpm_received
                 << "DENM-RECEIVED: " << m_denm_received << ",DENM-SENT: " << m_denm_sent
                 << std::endl;
+
+      if (m_cooperative_detection_enabled)
+        {
+          uint64_t coop_total = m_coop_optimal_count + m_coop_suboptimal_count;
+          double avg_sigma = coop_total > 0 ? m_coop_sigma_sum / coop_total : 0.0;
+          double avg_decel = coop_total > 0 ? m_coop_decel_sum / coop_total : 0.0;
+          std::cout << "COOP-" << m_id
+                    << ",MODE:" << m_sigma_mode
+                    << ",FIXED-SIGMA:" << m_fixed_sigma
+                    << ",MIDDLE-DECISIONS:" << coop_total
+                    << ",REAR-IN-SIGMA:" << m_coop_optimal_count
+                    << ",SIGMA-TIMEOUT:" << m_coop_suboptimal_count
+                    << ",AVG-SIGMA:" << avg_sigma
+                    << ",AVG-DECEL:" << avg_decel
+                    << std::endl;
+        }
       m_already_print = true;
     }
 }
@@ -414,40 +517,95 @@ emergencyVehicleAlert::StopApplicationNow ()
 void
 emergencyVehicleAlert::CheckForEvents ()
 {
-  double current_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
-  double acceleration = (current_speed - m_prev_speed) / m_event_check_interval;
-  m_prev_speed = current_speed;
-
-  if (!m_is_event_active)
+  // Read kinematic state once per tick.
+  double my_speed = 0.0;
+  double my_accel = 0.0;
+  try
     {
+      my_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+      my_accel = m_client->TraCIAPI::vehicle.getAcceleration (m_id);
+    }
+  catch (...)
+    {
+      // SUMO may not have stepped yet; skip this tick.
+      m_event_check_ev = Simulator::Schedule (Seconds (m_event_check_interval),
+                                               &emergencyVehicleAlert::CheckForEvents, this);
+      return;
+    }
+
+  // Push into the 1 s rolling speed window.
+  m_speed_window[m_speed_window_pos] = my_speed;
+  m_speed_window_pos = (m_speed_window_pos + 1) % SPEED_WINDOW_N;
+  if (m_speed_window_pos == 0)
+    m_speed_window_full = true;
+
+  if (my_speed > m_was_moving_speed)
+    m_has_been_moving = true;
+
+  // One-per-second state snapshot at NS_LOG_INFO. Gated, so silent
+  // unless the emergencyVehicleAlert log component is on.
+  static thread_local uint32_t s_tick = 0;
+  if ((++s_tick % 10) == 0)
+    {
+      NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] " << m_id
+                   << " STATE active=" << m_is_event_active
+                   << " v=" << my_speed << " a=" << my_accel
+                   << " hbt=" << m_hard_brake_threshold);
+    }
+
+  if (m_send_denm && !m_is_event_active)
+    {
+      long cause = -1, subcause = 0;
+      const char *reason = "";
+
       if (DetectHardBraking ())
         {
-          // causeCode=99 (dangerousSituation), subCauseCode=1 (emergencyElectronicBrakeEngaged)
-          TriggerDenm (99, 1);
-          m_is_event_active = true;
-
-          NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                           << " detected HARD BRAKING (accel=" << acceleration << " m/s^2)");
+          cause = 99;  // dangerousSituation
+          subcause = 1; // emergencyElectronicBrakeEngaged
+          reason = "HARD-BRAKE";
+        }
+      else if (DetectSpeedDrop (my_speed))
+        {
+          cause = 26;  // slowVehicle (loosest cause for "significant decel")
+          subcause = 0;
+          reason = "SPEED-DROP";
+        }
+      else if (DetectStationary (my_speed))
+        {
+          cause = 94;  // stationaryVehicle
+          subcause = 0;
+          reason = "STATIONARY";
         }
       else if (DetectCollisionRisk ())
         {
-          // causeCode=97 (collisionRisk), subCauseCode=0 (unavailable)
-          TriggerDenm (97, 0);
-          m_is_event_active = true;
+          cause = 97;  // collisionRisk
+          subcause = 0;
+          reason = "COLLISION-RISK";
+        }
 
-          NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                           << " detected COLLISION RISK");
+      if (cause >= 0)
+        {
+          std::cout << "[EVA-FIRE " << Simulator::Now ().GetSeconds () << "s] " << m_id
+                    << " " << reason << " cause=" << cause << "/" << subcause
+                    << " v=" << my_speed << " a=" << my_accel << std::endl;
+          TriggerDenm (cause, subcause);
+          m_is_event_active = true;
         }
     }
-  else
+  else if (m_send_denm && m_is_event_active)
     {
-      // Check if event has ended: no longer braking hard and no collision risk
-      double accel = m_client->TraCIAPI::vehicle.getAcceleration (m_id);
-      if (accel > m_hard_brake_threshold && !DetectCollisionRisk ())
+      // Termination: vehicle no longer in a hard-brake AND no collision risk
+      // AND not stationary (or stationary already reported and we've moved
+      // again). Be conservative — better to leave a DENM active than to
+      // flap.
+      bool not_braking = my_accel > m_hard_brake_threshold;
+      bool not_at_risk = !DetectCollisionRisk ();
+      bool not_stopped = my_speed > m_stationary_speed * 2.0;
+      if (not_braking && not_at_risk && not_stopped)
         {
           TerminateDenm ();
           m_is_event_active = false;
-
+          m_stationary_already_reported = false;
           NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
                            << " event ended, DENM terminated");
         }
@@ -459,6 +617,32 @@ emergencyVehicleAlert::CheckForEvents ()
   // Reschedule
   m_event_check_ev = Simulator::Schedule (Seconds (m_event_check_interval),
                                            &emergencyVehicleAlert::CheckForEvents, this);
+}
+
+bool
+emergencyVehicleAlert::DetectSpeedDrop (double current_speed)
+{
+  if (!m_speed_window_full)
+    return false;
+  // Speed one second ago is at the slot we're about to overwrite next,
+  // i.e. m_speed_window_pos. (Window is 10 entries at 100 ms each.)
+  double one_sec_ago = m_speed_window[m_speed_window_pos];
+  if (one_sec_ago - current_speed >= m_speed_drop_threshold)
+    return true;
+  return false;
+}
+
+bool
+emergencyVehicleAlert::DetectStationary (double current_speed)
+{
+  if (m_stationary_already_reported)
+    return false;
+  if (!m_has_been_moving)
+    return false;
+  if (current_speed >= m_stationary_speed)
+    return false;
+  m_stationary_already_reported = true;
+  return true;
 }
 
 bool
@@ -923,17 +1107,21 @@ emergencyVehicleAlert::translateCPMV1data (asn1cpp::Seq<CPMV1> cpm, int objectIn
 void
 emergencyVehicleAlert::receiveDENM (denData denm, Address from)
 {
-  m_denm_received++;
-
   // Extract action ID for sender identification
   ActionID_t action_id = denm.getDenmActionID ();
   unsigned long sender_station_id = action_id.originatingStationId;
   long sequence_number = action_id.sequenceNumber;
 
-  // Don't process our own DENMs
+  // Don't count or process our own DENMs (they loop back through the
+  // multicast group).
   unsigned long my_station_id = std::stol (m_id.substr (3));
   if (sender_station_id == my_station_id)
     return;
+
+  m_denm_received++;
+  std::cout << "[EVA-DENM " << Simulator::Now ().GetSeconds () << "s] " << m_id
+            << " RECEIVE actionId=(" << sender_station_id << "," << sequence_number
+            << ")" << std::endl;
 
   // Extract position information (converted from 0.1 micro-degrees to degrees)
   long latitude_raw = denm.getDenmMgmtLatitude ();
@@ -986,8 +1174,16 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
     }
 
   // --- Cooperative Ethical Braking Algorithm ---
-  if (m_cooperative_detection_enabled && max_deceleration > 0.0 &&
-      (cause_code == 99 || cause_code == 97))
+  // Trigger on any cause that indicates a braking-related event. The
+  // ETSI alacarte ethical extensions (max_deceleration etc.) are
+  // optional: when present, HandleCooperativeDenm uses them; when
+  // absent, it falls back to TraCI-derived defaults for the sender's
+  // deceleration and mass. Gating cooperative on
+  // max_deceleration > 0 used to silently skip the algorithm whenever
+  // include_ethical_alacarte was off, which is the default.
+  if (m_cooperative_detection_enabled &&
+      (cause_code == 99 || cause_code == 97 || cause_code == 26 ||
+       cause_code == 94))
     {
       HandleCooperativeDenm (denm, sender_station_id);
     }
@@ -1020,6 +1216,7 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
       entry.eventLat = latitude_degrees;
       entry.eventLon = longitude_degrees;
       entry.receiveTime_us = Simulator::Now ().GetMicroSeconds ();
+      entry.lastForwardTime_us = 0;
       entry.forwardCount = 0;
       m_forwardingTable[fw_key] = entry;
       fw_it = m_forwardingTable.find (fw_key);
@@ -1035,14 +1232,33 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
   // Forward if within 500m relevance area and forward count not exceeded
   if (dist_to_event < 500.0 && fw_it->second.forwardCount < MAX_FORWARD_COUNT)
     {
-      // Check minimum forwarding interval
+      // Gate on time since the *last forward*, not since the last receive.
+      // The previous code reset receiveTime_us on every receive, so this
+      // condition was always 0 after the first forward and the count never
+      // climbed past 1 even when MAX_FORWARD_COUNT allowed more.
       uint64_t now_us = Simulator::Now ().GetMicroSeconds ();
-      if (fw_it->second.forwardCount == 0 ||
-          (now_us - fw_it->second.receiveTime_us) >= MIN_FORWARD_INTERVAL_US)
+      if (fw_it->second.lastForwardTime_us == 0 ||
+          (now_us - fw_it->second.lastForwardTime_us) >= MIN_FORWARD_INTERVAL_US)
         {
           DEN_ActionID_t fwd_action_id;
           fwd_action_id.originatingStationID = sender_station_id;
           fwd_action_id.sequenceNumber = sequence_number;
+
+          // The forwarded packet's GBC header carries the GeoArea from
+          // DENBasicService::m_geoArea. Without this re-set, the forwarder
+          // would stamp the packet with its own last event area (or
+          // uninitialized bytes if it has never triggered a DENM), and every
+          // receiver would discard the packet at the isInsideGeoArea check.
+          // Anchor the area on the originator's event location with the
+          // cause-code-dependent radius used by TriggerDenm.
+          GeoArea_t fwdGeoArea;
+          fwdGeoArea.posLat = (long) (latitude_degrees * DOT_ONE_MICRO);
+          fwdGeoArea.posLong = (long) (longitude_degrees * DOT_ONE_MICRO);
+          fwdGeoArea.distA = (cause_code == 99) ? 200 : 300;
+          fwdGeoArea.distB = 0;
+          fwdGeoArea.angle = 0;
+          fwdGeoArea.shape = CIRCULAR;
+          m_denService.setGeoArea (fwdGeoArea);
 
           DENBasicService_error_t fwd_retval =
               m_denService.forwardDENM (denm, fwd_action_id);
@@ -1050,6 +1266,7 @@ emergencyVehicleAlert::receiveDENM (denData denm, Address from)
           if (fwd_retval == DENM_NO_ERROR)
             {
               fw_it->second.forwardCount++;
+              fw_it->second.lastForwardTime_us = now_us;
               NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
                                << " forwarded DENM from station " << sender_station_id
                                << " (forward #" << fw_it->second.forwardCount << ")");
@@ -1065,20 +1282,34 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
   DEN_ActionID_t actionid;
   DENBasicService_error_t trigger_retval;
 
+  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] Vehicle " << m_id
+               << " TRIGGER cause=" << causeCode << "/" << subCauseCode);
+
   // Get real coordinates from SUMO
-  libsumo::TraCIPosition pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
-  pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (pos.x, pos.y);
+  libsumo::TraCIPosition posXY = m_client->TraCIAPI::vehicle.getPosition (m_id);
+  libsumo::TraCIPosition pos =
+      m_client->TraCIAPI::simulation.convertXYtoLonLat (posXY.x, posXY.y);
+
+  // Detection time: the time at which the event was originally detected.
+  // Capture it once here and reuse it through UpdateDenm/TerminateDenm so the
+  // DENM keeps a stable detection-time anchor across its lifecycle, per
+  // ETSI EN 302 637-3.
+  m_active_detection_time_ms = compute_timestampIts (m_real_time);
 
   // Set management container mandatory fields with real coordinates (0.1 microdegrees)
-  data.setDenmMandatoryFields (compute_timestampIts (m_real_time),
+  data.setDenmMandatoryFields (m_active_detection_time_ms,
                                (long) (pos.y * DOT_ONE_MICRO),
                                (long) (pos.x * DOT_ONE_MICRO));
 
   // Set validity duration (30 seconds for safety events)
   data.setValidityDuration (30);
 
-  // Set repetition parameters (500ms interval, 30s duration)
-  data.setDenmRepetition (30000, 500);
+  // Repetition is driven by the application's UpdateDenm scheduler. Leaving
+  // service-side repetition on (setDenmRepetition(duration, interval)) makes
+  // every interval fire twice — once from T_RepetitionStop in DENBasicService,
+  // once from appDENM_update inside UpdateDenm — because both rearm the same
+  // timer. Explicitly disable service-side repetition here.
+  data.setDenmRepetition (0, 0);
 
   // Set situation container
   denData::denDataSituation situation;
@@ -1110,10 +1341,29 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
 
   // Set alacarte container
   data.setDenmAlacarteVehicleMass ((long) m_vehicle_mass);
-  data.setDenmAlacarteLanePosition ((long) m_client->TraCIAPI::vehicle.getLanePosition (m_id));
+  // ASN.1 LanePosition is the lane *index* (-1..14: offTheRoad, hardShoulder,
+  // innermost driving lane, …, outerHardShoulder), NOT the longitudinal offset.
+  // TraCI's getLanePosition returns metres-along-lane (was overflowing the
+  // (-1..14) constraint and killing the UPER encode with failed_type=LanePosition).
+  // Clamp the lane index defensively in case TraCI returns >14 (e.g. on
+  // multi-lane motorway scenarios beyond ETSI's enumerated range).
+  {
+    long laneIdx = (long) m_client->TraCIAPI::vehicle.getLaneIndex (m_id);
+    if (laneIdx < -1) laneIdx = -1;
+    if (laneIdx > 14) laneIdx = 14;
+    data.setDenmAlacarteLanePosition (laneIdx);
+  }
 
-  // Set ethical V2X custom fields if enabled
-  if (m_ethical_braking_enabled || m_cooperative_detection_enabled)
+  // The ethical extension fields (ethicalMaxDeceleration,
+  // ethicalBrakingStartTime, ethicalVehicleMass) are *custom*
+  // additions to the alacarte container — not in the original ETSI
+  // EN 302 637-3 spec — added by hand to the generated ASN.1 C
+  // descriptor. If the asn1c PER extension wiring is incomplete, the
+  // UPER encoder rejects the whole DENM. IncludeEthicalAlacarte
+  // defaults off so basic DENMs always encode; turn it on once the
+  // extension is known good.
+  if ((m_ethical_braking_enabled || m_cooperative_detection_enabled)
+      && m_include_ethical_alacarte)
     {
       double max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
       data.setDenmAlacarteMaxDeceleration (max_decel);
@@ -1135,25 +1385,48 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
 
   if (trigger_retval != DENM_NO_ERROR)
     {
+      std::cout << "[EVA-DENM " << Simulator::Now ().GetSeconds () << "s] " << m_id
+                << " TRIGGER FAILED err=" << trigger_retval
+                << " cause=" << causeCode << "/" << subCauseCode << std::endl;
       NS_LOG_ERROR ("Cannot trigger DENM. Error code: " << trigger_retval);
     }
   else
     {
       m_denm_sent++;
       m_active_action_id = actionid;
+      std::cout << "[EVA-DENM " << Simulator::Now ().GetSeconds () << "s] " << m_id
+                << " TRIGGER OK actionId=(" << actionid.originatingStationID
+                << "," << actionid.sequenceNumber << ") cause=" << causeCode
+                << "/" << subCauseCode << std::endl;
 
-      // Change vehicle color to red to indicate event
-      libsumo::TraCIColor red;
-      red.r = 255;
-      red.g = 0;
-      red.b = 0;
-      red.a = 255;
-      m_client->TraCIAPI::vehicle.setColor (m_id, red);
+      try
+        {
+          libsumo::TraCIColor red;
+          red.r = 255;
+          red.g = 0;
+          red.b = 0;
+          red.a = 255;
+          m_client->TraCIAPI::vehicle.setColor (m_id, red);
 
-      // Schedule periodic updates
-      m_update_denm_ev =
-          Simulator::Schedule (MilliSeconds (500), &emergencyVehicleAlert::UpdateDenm, this,
-                               actionid);
+          // V1's "a1 = a_max" is enforced externally by the force_brake
+          // scheduler in the NR scenario. We deliberately do NOT call
+          // ApplyCooperativeBraking on the originator here — stacking a
+          // second slowDown on the same vehicle in the same simulator
+          // step desyncs TraCI. The middle / rear branches of
+          // HandleCooperativeDenm still call ApplyCooperativeBraking on
+          // *their own* vehicle, which is safe.
+          m_update_denm_ev =
+              Simulator::Schedule (MilliSeconds (500),
+                                   &emergencyVehicleAlert::UpdateDenm, this, actionid);
+        }
+      catch (const std::exception &e)
+        {
+          NS_LOG_ERROR ("TriggerDenm post-encode exception: " << e.what ());
+        }
+      catch (...)
+        {
+          NS_LOG_ERROR ("TriggerDenm post-encode exception (unknown)");
+        }
     }
 }
 
@@ -1163,18 +1436,24 @@ emergencyVehicleAlert::UpdateDenm (DEN_ActionID actionid)
   denData data;
   DENBasicService_error_t trigger_retval;
 
+  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] Vehicle " << m_id
+               << " UPDATE seq=" << actionid.sequenceNumber);
+
   // Get updated coordinates from SUMO
   libsumo::TraCIPosition pos = m_client->TraCIAPI::vehicle.getPosition (m_id);
   pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (pos.x, pos.y);
 
-  // Set management container mandatory fields with updated position
+  // Set management container mandatory fields with updated position.
+  // Detection time stays anchored to the original trigger time per
+  // ETSI EN 302 637-3; only position and reference time advance.
   data.setDenmMandatoryFields (actionid.originatingStationID, actionid.sequenceNumber,
-                               compute_timestampIts (m_real_time),
+                               m_active_detection_time_ms,
                                (double) (pos.y * DOT_ONE_MICRO),
                                (double) (pos.x * DOT_ONE_MICRO));
 
   data.setValidityDuration (30);
-  data.setDenmRepetition (30000, 500);
+  // App-driven repetition: see TriggerDenm comment.
+  data.setDenmRepetition (0, 0);
 
   // Update speed
   double speed_ms = m_client->TraCIAPI::vehicle.getSpeed (m_id);
@@ -1196,9 +1475,21 @@ emergencyVehicleAlert::UpdateDenm (DEN_ActionID actionid)
 
   // Update alacarte
   data.setDenmAlacarteVehicleMass ((long) m_vehicle_mass);
-  data.setDenmAlacarteLanePosition ((long) m_client->TraCIAPI::vehicle.getLanePosition (m_id));
+  // ASN.1 LanePosition is the lane *index* (-1..14: offTheRoad, hardShoulder,
+  // innermost driving lane, …, outerHardShoulder), NOT the longitudinal offset.
+  // TraCI's getLanePosition returns metres-along-lane (was overflowing the
+  // (-1..14) constraint and killing the UPER encode with failed_type=LanePosition).
+  // Clamp the lane index defensively in case TraCI returns >14 (e.g. on
+  // multi-lane motorway scenarios beyond ETSI's enumerated range).
+  {
+    long laneIdx = (long) m_client->TraCIAPI::vehicle.getLaneIndex (m_id);
+    if (laneIdx < -1) laneIdx = -1;
+    if (laneIdx > 14) laneIdx = 14;
+    data.setDenmAlacarteLanePosition (laneIdx);
+  }
 
-  if (m_ethical_braking_enabled || m_cooperative_detection_enabled)
+  if ((m_ethical_braking_enabled || m_cooperative_detection_enabled)
+      && m_include_ethical_alacarte)
     {
       double max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
       data.setDenmAlacarteMaxDeceleration (max_decel);
@@ -1240,6 +1531,9 @@ emergencyVehicleAlert::TerminateDenm ()
   if (!m_is_event_active)
     return;
 
+  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] Vehicle " << m_id
+               << " TERMINATE seq=" << m_active_action_id.sequenceNumber);
+
   Simulator::Cancel (m_update_denm_ev);
 
   denData data;
@@ -1249,7 +1543,7 @@ emergencyVehicleAlert::TerminateDenm ()
 
   data.setDenmMandatoryFields (m_active_action_id.originatingStationID,
                                m_active_action_id.sequenceNumber,
-                               compute_timestampIts (m_real_time),
+                               m_active_detection_time_ms,
                                (double) (pos.y * DOT_ONE_MICRO),
                                (double) (pos.x * DOT_ONE_MICRO));
 
@@ -1610,9 +1904,15 @@ emergencyVehicleAlert::CalculateOptimalDeceleration (double v1, double a1, doubl
 void
 emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long senderStationId)
 {
+  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] " << m_id
+               << " HandleCooperativeDenm sender=" << senderStationId);
+
   // Don't re-enter if already actively processing
   if (m_coopBraking.active && m_coopBraking.decisionMade)
     return;
+
+  try
+    {
 
   unsigned long my_station_id = std::stol (m_id.substr (3));
 
@@ -1625,9 +1925,13 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
   double my_max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
   double my_heading = m_client->TraCIAPI::vehicle.getAngle (m_id);
 
-  // Extract sender's data from DENM alacarte
-  double sender_max_decel = 0.0;
-  double sender_mass = 1500.0;
+  // Extract sender's data from DENM alacarte. The ethical-extension
+  // fields (maxDeceleration, vehicleMass) are not part of the
+  // baseline ETSI alacarte and are gated behind include_ethical_alacarte
+  // on the sender; when off, we use defensible defaults so the algo
+  // still runs.
+  double sender_max_decel = 0.0;     // 0 ⇒ "unknown"; replaced below
+  double sender_mass = m_vehicle_mass;
   if (denm.isDenmAlacarteDataSet ())
     {
       auto alacarte = denm.getDenmAlacarteData_asn_types ().getData ();
@@ -1635,6 +1939,13 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
         sender_max_decel = alacarte.maxDeceleration.getData ();
       if (alacarte.vehicleMass.isAvailable ())
         sender_mass = static_cast<double> (alacarte.vehicleMass.getData ());
+    }
+  if (sender_max_decel <= 0.0)
+    {
+      // No ethical alacarte: assume sender's max deceleration equals our
+      // own. Reasonable for a fleet of similar vehicles; for mixed
+      // fleets the sender would carry its mass+decel in the alacarte.
+      sender_max_decel = my_max_decel;
     }
 
   // Get sender speed from DENM location container
@@ -1767,10 +2078,27 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
       m_coopBraking.decisionMade = false;
       m_coopBraking.rearDenmReceived = false;
 
-      double a_ahead = sender_max_decel > 0 ? sender_max_decel : leader_max_decel;
+      // Snapshot leader / follower identity so the σ-timeout branch can
+      // re-run the optimization with up-to-date neighbor-table CAM data
+      // instead of using the closed-form suboptimal value.
+      m_coopBraking.followerStationId = follower_station_id;
+      m_coopBraking.leaderStationId = leader_station_id;
+      m_coopBraking.leaderMass = sender_mass;
 
-      // Calculate decision time budget sigma
-      double sigma = CalculateDecisionBudget (my_speed, my_max_decel, leader_speed, a_ahead, gap_to_leader);
+      double a_ahead = sender_max_decel > 0 ? sender_max_decel : leader_max_decel;
+      m_coopBraking.leaderAheadDecel = a_ahead;
+
+      // Decision time budget σ. Default is the closed-form computed value
+      // (sweep-friendly override via attributes for parameter studies).
+      double sigma_computed =
+          CalculateDecisionBudget (my_speed, my_max_decel, leader_speed, a_ahead, gap_to_leader);
+      double sigma;
+      if (m_sigma_mode == "fixed")
+        sigma = std::max (0.0, m_fixed_sigma);
+      else if (m_sigma_mode == "scaled")
+        sigma = std::max (0.0, sigma_computed * m_fixed_sigma);
+      else
+        sigma = sigma_computed;
       m_coopBraking.sigma = sigma;
 
       // Calculate suboptimal deceleration (guarantees H_{self,ahead} = 0)
@@ -1785,6 +2113,17 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
                        << " COOPERATIVE: middle vehicle role, sigma=" << sigma
                        << "s, suboptimal_a2=" << subopt_a2
                        << " m/s^2, waiting for rear DENM from station " << follower_station_id);
+
+      // Paper algorithm 2 step 3: vehicle 2 generates its own DENM to inform
+      // vehicle 3 that the cooperative protocol has begun. Use sub-cause 2
+      // to mark this as a cooperative relay (sub-cause 1 = primary brake).
+      // Skip if we already have an active DENM of our own — CheckForEvents
+      // will handle the lifecycle.
+      if (!m_is_event_active)
+        {
+          TriggerDenm (99, 2);
+          m_is_event_active = true;
+        }
 
       // Schedule decision timeout
       m_coopBraking.decisionTimerEvent = Simulator::Schedule (
@@ -1804,36 +2143,71 @@ emergencyVehicleAlert::HandleCooperativeDenm (denData &denm, unsigned long sende
                        << " COOPERATIVE: rear vehicle role, braking at max decel="
                        << my_max_decel << " m/s^2");
 
-      double h_ahead = CalculateHarm (m_vehicle_mass, my_speed, my_max_decel,
+      // Scale V3's brake down so it doesn't out-brake V2's softer
+      // optimal_a2 and close the V2↔V3 gap. m_chain_brake_fraction
+      // defaults to 0.7; 1.0 == paper-strict behaviour.
+      double chain_decel = std::max (0.1, my_max_decel * m_chain_brake_fraction);
+
+      double h_ahead = CalculateHarm (m_vehicle_mass, my_speed, chain_decel,
                                       sender_mass, sender_speed, sender_max_decel, gap_to_leader);
 
       LogCooperativeDecision ("rear", cause_code, senderStationId,
-                              h_ahead, 0.0, h_ahead, my_max_decel, 0.0, false);
+                              h_ahead, 0.0, h_ahead, chain_decel, 0.0, false);
 
-      ApplyCooperativeBraking (my_max_decel, false);
+      // Paper algorithm 3 step 4: vehicle 3 generates a DENM toward vehicle 2
+      // so the σ-budget loop can close. Sub-cause 2 marks it as a cooperative
+      // relay.
+      if (!m_is_event_active)
+        {
+          TriggerDenm (99, 2);
+          m_is_event_active = true;
+        }
+
+      ApplyCooperativeBraking (chain_decel, false);
       return;
     }
 
   // === CASE: Received forwarded DENM about someone further ahead ===
   if (!originator_is_leader && !m_coopBraking.active)
     {
-      // I'm further back in the chain — treat as rear vehicle: brake at max
+      // I'm further back in the chain — treat as rear vehicle: brake at
+      // m_chain_brake_fraction × max_decel (see attribute doc).
       m_coopBraking.active = true;
       m_coopBraking.originatorStationId = originator_id;
       m_coopBraking.decisionMade = true;
 
+      double chain_decel = std::max (0.1, my_max_decel * m_chain_brake_fraction);
+
       NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                       << " COOPERATIVE: chain vehicle, braking at max decel="
-                       << my_max_decel << " m/s^2");
+                       << " COOPERATIVE: chain vehicle, braking at " << chain_decel
+                       << " m/s^2 (fraction=" << m_chain_brake_fraction << ")");
 
       double h_ahead = has_leader ?
-          CalculateHarm (m_vehicle_mass, my_speed, my_max_decel,
+          CalculateHarm (m_vehicle_mass, my_speed, chain_decel,
                          1500.0, leader_speed, leader_max_decel, gap_to_leader) : 0.0;
 
       LogCooperativeDecision ("chain", cause_code, senderStationId,
-                              h_ahead, 0.0, h_ahead, my_max_decel, 0.0, false);
+                              h_ahead, 0.0, h_ahead, chain_decel, 0.0, false);
 
-      ApplyCooperativeBraking (my_max_decel, false);
+      if (!m_is_event_active)
+        {
+          TriggerDenm (99, 2);
+          m_is_event_active = true;
+        }
+
+      ApplyCooperativeBraking (chain_decel, false);
+    }
+
+    }
+  catch (const std::exception &e)
+    {
+      NS_LOG_ERROR ("[" << Simulator::Now ().GetSeconds () << "s] " << m_id
+                    << " HandleCooperativeDenm exception: " << e.what ());
+    }
+  catch (...)
+    {
+      NS_LOG_ERROR ("[" << Simulator::Now ().GetSeconds () << "s] " << m_id
+                    << " HandleCooperativeDenm exception (unknown)");
     }
 }
 
@@ -1843,24 +2217,29 @@ emergencyVehicleAlert::CooperativeDecisionTimeout ()
   if (m_coopBraking.decisionMade)
     return;
 
-  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
-                   << " COOPERATIVE: sigma timeout, applying suboptimal decel="
-                   << m_coopBraking.suboptimalDecel << " m/s^2");
+  // Paper algorithm 2 lines 11-12: σ expired without a fresh rear DENM,
+  // so recompute H_total = H_{1,2} + H_{2,3} using whatever V3 state we
+  // have from the last received CAM and pick the a2 that minimizes it.
+  // Falling back to the closed-form suboptimal (the previous behaviour)
+  // skips the optimization entirely and makes the σ knob meaningless.
 
-  // Get current kinematic state for harm calculation
   double my_speed = m_client->TraCIAPI::vehicle.getSpeed (m_id);
-  auto leader = m_client->TraCIAPI::vehicle.getLeader (m_id, 200.0);
-  double leader_speed = 0;
-  double leader_max_decel = 7.5;
-  double gap_to_leader = 0;
-  double leader_mass = 1500.0;
+  double my_max_decel = m_client->TraCIAPI::vehicle.getDecel (m_id);
 
+  // Leader info: prefer the snapshot taken when we entered the wait
+  // (sender_max_decel etc. came from the DENM alacarte). For position
+  // and current speed we re-query TraCI so the gap is fresh.
+  auto leader = m_client->TraCIAPI::vehicle.getLeader (m_id, 200.0);
+  double leader_speed = 0.0;
+  double gap_to_leader = 0.0;
+  double leader_max_decel = m_coopBraking.leaderAheadDecel > 0
+                                ? m_coopBraking.leaderAheadDecel : 7.5;
+  double leader_mass = m_coopBraking.leaderMass;
   if (!leader.first.empty () && leader.second >= 0)
     {
       try
         {
           leader_speed = m_client->TraCIAPI::vehicle.getSpeed (leader.first);
-          leader_max_decel = m_client->TraCIAPI::vehicle.getDecel (leader.first);
           gap_to_leader = leader.second;
         }
       catch (...)
@@ -1868,14 +2247,60 @@ emergencyVehicleAlert::CooperativeDecisionTimeout ()
         }
     }
 
-  double h12 = CalculateHarm (m_vehicle_mass, my_speed, m_coopBraking.suboptimalDecel,
-                               leader_mass, leader_speed, leader_max_decel, gap_to_leader);
+  // Follower info: use last neighbor-table entry (i.e. last CAM) for
+  // the station id we noted when entering the wait. If we lost track,
+  // assume no follower (gap=0, speed=0) — degenerates to the
+  // single-pair optimization.
+  double follower_speed = 0.0;
+  double follower_max_decel = 7.5;
+  double follower_mass = 1500.0;
+  double gap_to_follower = 0.0;
+  if (m_coopBraking.followerStationId != 0)
+    {
+      auto it = m_neighborTable.find (m_coopBraking.followerStationId);
+      if (it != m_neighborTable.end ())
+        {
+          follower_speed = it->second.speed;
 
+          libsumo::TraCIPosition my_pos =
+              m_client->TraCIAPI::vehicle.getPosition (m_id);
+          my_pos = m_client->TraCIAPI::simulation.convertXYtoLonLat (my_pos.x, my_pos.y);
+          gap_to_follower = appUtil_haversineDist (my_pos.y, my_pos.x,
+                                                    it->second.latitude,
+                                                    it->second.longitude);
+        }
+    }
+
+  double optimal_a2 = CalculateOptimalDeceleration (
+      leader_speed, leader_max_decel, leader_mass,
+      my_speed, m_vehicle_mass, my_max_decel,
+      follower_speed, follower_max_decel, follower_mass,
+      gap_to_leader, gap_to_follower);
+
+  double h12 = CalculateHarm (m_vehicle_mass, my_speed, optimal_a2,
+                              leader_mass, leader_speed, leader_max_decel,
+                              gap_to_leader);
+  double h23 = (gap_to_follower > 0)
+                   ? CalculateHarm (follower_mass, follower_speed,
+                                    follower_max_decel, m_vehicle_mass,
+                                    my_speed, optimal_a2, gap_to_follower)
+                   : 0.0;
+
+  NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "] Vehicle " << m_id
+                   << " COOPERATIVE: sigma timeout, optimization on last-CAM data"
+                   << " optimal_a2=" << optimal_a2
+                   << " H12=" << h12 << " H23=" << h23
+                   << " Htotal=" << h12 + h23);
+
+  // isOptimal=false here because the decision was made without a fresh
+  // rear DENM; the COOP CSV's isOptimal column still flags "rear DENM
+  // arrived in σ" semantics. The optimal_a2 magnitude itself reflects
+  // the joint H_total minimization.
   LogCooperativeDecision ("middle", -1, m_coopBraking.originatorStationId,
-                          h12, 0.0, h12, m_coopBraking.suboptimalDecel,
+                          h12, h23, h12 + h23, optimal_a2,
                           m_coopBraking.sigma, false);
 
-  ApplyCooperativeBraking (m_coopBraking.suboptimalDecel, false);
+  ApplyCooperativeBraking (optimal_a2, false);
 }
 
 void
@@ -1908,8 +2333,21 @@ void
 emergencyVehicleAlert::LogCooperativeDecision (const std::string &role, long causeCode,
                                                unsigned long senderStationId, double harm12,
                                                double harm23, double harmTotal,
-                                               double deceleration, double sigma, bool isOptimal)
+                                               double deceleration, double sigma,
+                                               bool rearDenmInSigma)
 {
+  // Counters for the end-of-run summary. Count only "middle" decisions —
+  // chain / rear branches don't exercise the σ-budget loop.
+  if (role == "middle")
+    {
+      if (rearDenmInSigma)
+        m_coop_optimal_count++;
+      else
+        m_coop_suboptimal_count++;
+      m_coop_sigma_sum += sigma;
+      m_coop_decel_sum += deceleration;
+    }
+
   if (m_csv_ofstream_coop.is_open ())
     {
       m_csv_ofstream_coop << Simulator::Now ().GetSeconds () << ","
@@ -1922,7 +2360,9 @@ emergencyVehicleAlert::LogCooperativeDecision (const std::string &role, long cau
                           << harmTotal << ","
                           << deceleration << ","
                           << sigma << ","
-                          << (isOptimal ? 1 : 0) << std::endl;
+                          << (rearDenmInSigma ? 1 : 0) << ","
+                          << m_sigma_mode << ","
+                          << m_fixed_sigma << std::endl;
     }
 }
 

@@ -19,6 +19,9 @@
 */
 
 #include "denData.h"
+
+#include <iostream>
+
 #include "ns3/Seq.hpp"
 #include "ns3/Getter.hpp"
 #include "ns3/Setter.hpp"
@@ -67,8 +70,46 @@ denData::setDenmMandatoryFields (long detectionTime_ms, double latReference_deg,
                                  double longReference_deg)
 {
   m_management.detectionTime = detectionTime_ms;
-  m_management.latitude = (long) latReference_deg;
-  m_management.longitude = (long) longReference_deg;
+
+  // ASN.1 ranges (0.1 µdeg):
+  //   Latitude  : -900_000_000 .. 900_000_001 (last == unavailable)
+  //   Longitude : -1800_000_000 .. 1800_000_001 (last == unavailable)
+  // SUMO scenes built without a real geo projection (projParameter="!")
+  // make TraCI::convertXYtoLonLat return raw metres, which after the
+  // application's "* DOT_ONE_MICRO" scale lands far above 1.8·10⁹ and
+  // causes the entire DENM UPER encoding to fail (DENM_ASN1_UPER_ENC_ERROR).
+  // Clamp here so the encoding always succeeds and print a warning on
+  // stderr the first time we have to clamp — that points the operator at
+  // the underlying SUMO-projection bug instead of letting it stay silent.
+  const long LAT_MAX  =  900000000L;
+  const long LAT_MIN  = -900000000L;
+  const long LON_MAX  =  1800000000L;
+  const long LON_MIN  = -1800000000L;
+
+  long lat = (long) latReference_deg;
+  long lon = (long) longReference_deg;
+
+  static bool warned = false;
+  if (lat > LAT_MAX || lat < LAT_MIN || lon > LON_MAX || lon < LON_MIN)
+    {
+      if (!warned)
+        {
+          std::cerr << "denData: lat/lon outside ASN.1 range, clamping. "
+                       "lat_in=" << lat << " lon_in=" << lon
+                    << ". Most likely the SUMO net.xml lacks a geo projection "
+                       "(projParameter=\"!\"); fix the .net.xml to make the "
+                       "encoded DENM coordinates correct rather than clamped."
+                    << std::endl;
+          warned = true;
+        }
+      if (lat > LAT_MAX) lat = LAT_MAX;
+      if (lat < LAT_MIN) lat = LAT_MIN;
+      if (lon > LON_MAX) lon = LON_MAX;
+      if (lon < LON_MIN) lon = LON_MIN;
+    }
+
+  m_management.latitude = lat;
+  m_management.longitude = lon;
   m_management.altitude.setValue (AltitudeValue_unavailable);
   m_management.altitude.setConfidence (AltitudeConfidence_unavailable);
   m_management.posConfidenceEllipse.semiMajorConfidence = SemiAxisLength_unavailable;

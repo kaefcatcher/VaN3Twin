@@ -51,6 +51,7 @@ public:
     double eventLat;  // degrees
     double eventLon;  // degrees
     uint64_t receiveTime_us;
+    uint64_t lastForwardTime_us;
     int forwardCount;
   };
 
@@ -74,6 +75,14 @@ public:
     double suboptimalDecel = 0.0;   // fallback deceleration
     bool decisionMade = false;
     bool rearDenmReceived = false;
+
+    /* Snapshot taken when the middle vehicle starts waiting; used by the
+       σ-timeout branch to re-run optimization with the freshest neighbor
+       data instead of falling back to the closed-form suboptimal value. */
+    unsigned long followerStationId = 0; // 0 = unknown
+    unsigned long leaderStationId = 0;   // 0 = unknown
+    double leaderAheadDecel = 0.0;       // m/s²
+    double leaderMass = 1500.0;          // kg
   };
 
   // void receiveCAM (CAM_t *cam, Address from);
@@ -114,6 +123,8 @@ private:
   void CheckForEvents ();
   bool DetectHardBraking ();
   bool DetectCollisionRisk ();
+  bool DetectSpeedDrop (double current_speed);     // ≥ m_speed_drop_threshold over 1 s window
+  bool DetectStationary (double current_speed);    // came to a stop after moving
   void CleanupForwardingTable ();
 
   /* Cooperative ethical braking algorithm */
@@ -131,7 +142,8 @@ private:
   void LogCooperativeDecision (const std::string &role, long causeCode,
                                unsigned long senderStationId, double harm12,
                                double harm23, double harmTotal,
-                               double deceleration, double sigma, bool isOptimal);
+                               double deceleration, double sigma,
+                               bool rearDenmInSigma);
 
   /* Unified message logging (MSGLOG CSV) */
   double CalculatePairwiseHarm (double m1, double v1, double m2, double v2);
@@ -174,21 +186,48 @@ private:
 
   bool m_send_cam;
   bool m_send_cpm;
+  bool m_send_denm;
 
   /* Event detection */
-  double m_prev_speed;
   bool m_is_event_active;
   DEN_ActionID_t m_active_action_id;
+  long m_active_detection_time_ms; // detection time of the current active event, preserved across updates
   double m_hard_brake_threshold;     // m/s², default -4.0
   double m_collision_risk_distance;  // m, default 20.0
   double m_event_check_interval;     // s, default 0.1
   double m_vehicle_mass;             // kg, default 1500.0
   bool m_ethical_braking_enabled;
   bool m_cooperative_detection_enabled;
+  bool m_include_ethical_alacarte;   // wrap custom extension fields in DENM alacarte
+
+  /* Lenient triggers (ETSI cause 26 slowVehicle / 94 stationaryVehicle).
+     These fire from a single vehicle's own kinematics — no leader or gap
+     needed — so they always fire in any scenario where a vehicle slows
+     or stops. Defaults are tuned so any meaningful brake event triggers. */
+  double m_speed_drop_threshold;     // m/s drop within 1 s, default 3.0
+  double m_stationary_speed;         // m/s, below which we count as stopped, default 1.0
+  double m_was_moving_speed;         // m/s, must have been above this earlier, default 5.0
+
+  /* 1-second rolling-window speed history (10 ticks at 0.1 s interval). */
+  static const int SPEED_WINDOW_N = 10;
+  double m_speed_window[SPEED_WINDOW_N];
+  int m_speed_window_pos = 0;
+  bool m_speed_window_full = false;
+  bool m_has_been_moving = false;
+  bool m_stationary_already_reported = false;
+  std::string m_sigma_mode;          // "computed" | "fixed" | "scaled"
+  double m_fixed_sigma;              // seconds (fixed) or multiplier (scaled)
+  double m_chain_brake_fraction;     // fraction of max_decel applied in V3 chain/rear branch
 
   /* Cooperative braking state */
   CooperativeBrakingState m_coopBraking;
   std::ofstream m_csv_ofstream_coop;
+
+  /* Cooperative decision summary (printed in StopApplication) */
+  uint64_t m_coop_optimal_count = 0;    // rear DENM arrived within σ
+  uint64_t m_coop_suboptimal_count = 0; // σ timed out
+  double m_coop_sigma_sum = 0.0;        // for averaging
+  double m_coop_decel_sum = 0.0;        // for averaging
 
   /* Neighbor tracking (filled from received CAMs) */
   std::unordered_map<unsigned long, NeighborState> m_neighborTable;

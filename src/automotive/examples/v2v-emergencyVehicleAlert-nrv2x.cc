@@ -38,8 +38,12 @@
 #include "ns3/sumo_xml_parser.h"
 #include "ns3/vehicle-visualizer-module.h"
 #include "ns3/MetricSupervisor.h"
+#include "ns3/HarmLogger.h"
 #include "json.hpp"
 #include <fstream>
+#include <vector>
+#include <sstream>
+#include <set>
 
 #include <unistd.h>
 #include "ns3/core-module.h"
@@ -117,7 +121,7 @@ main (int argc, char *argv[])
   bool realtime = config.value("realtime", false);
   bool sumo_gui = config.value("sumo_gui", true);
   double sumo_updates = config.value("sumo_updates", 0.01);
-  std::string csv_name = "mylog";
+  std::string csv_name = config.value("csv_log", std::string("mylog"));
   std::string csv_name_cumulative = config.value("csv_name_cumulative", std::string("results"));
   std::string sumo_netstate_file_name;
   bool vehicle_vis = config.value("vehicle_vis", false);
@@ -127,6 +131,36 @@ main (int argc, char *argv[])
 
   double penetrationRate = 1.0;
   bool cooperativeDetection = true;
+  bool sendDenm = true;
+  std::string sigmaMode = "computed";   // "computed" | "fixed" | "scaled"
+  double fixedSigma = 0.5;              // seconds (fixed) or multiplier (scaled)
+  std::string harmLogFile = "harm_log.csv";
+  double harmLogPeriodS = 0.1;
+  double harmLogRadiusM = 150.0;
+
+  // Forced emergency brake of a designated vehicle, used to guarantee a
+  // hard-brake event in scenarios where SUMO's planned <stop> would
+  // otherwise decelerate too smoothly to fire the HardBrakeThreshold gate.
+  // forceBrakeTime <= 0 disables the feature.
+  double forceBrakeTime = 15.0;            // seconds of simulation time
+  std::string forceBrakeVehicles = "veh0";   // SUMO vehicle id to brake
+  double forceBrakeDuration = 1.0;          // seconds to reach speed 0
+  double forceBrakeTargetSpeed = 0.0;       // m/s
+  double forceBrakePosition = 2500.0;
+
+  // Single-vehicle DENM trigger thresholds (cause 26 / 94). Lenient
+  // defaults so any meaningful brake event fires a DENM.
+  double speedDropThreshold = 3.0;          // m/s drop in 1 s
+  double stationarySpeed = 1.0;             // m/s
+  double wasMovingSpeed = 5.0;              // m/s, hysteresis floor
+
+  // Custom alacarte extension fields. Off by default — they're a
+  // suspect for UPER encode failures.
+  bool includeEthicalAlacarte = false;
+
+  // Fraction of max_decel that V3 applies in the chain / rear cooperative
+  // branch. 1.0 = paper-strict; reduce to keep V3 from out-braking V2.
+  double chainBrakeFraction = 1.0;
 
   xmlDocPtr rou_xml_file;
   double m_baseline_prr = config.value("m_baseline_prr", 150.0);
@@ -188,12 +222,43 @@ main (int argc, char *argv[])
     slProbResourceKeep= config.value("probResourceKeep", slProbResourceKeep);
     m_baseline_prr    = config.value("baseline", m_baseline_prr);
     m_metric_sup      = config.value("metric_supervisor", m_metric_sup);
+    sendDenm          = config.value("send_denm", sendDenm);
+    cooperativeDetection = config.value("cooperative_detection", cooperativeDetection);
+    sigmaMode         = config.value("sigma_mode", sigmaMode);
+    fixedSigma        = config.value("fixed_sigma", fixedSigma);
+    harmLogFile       = config.value("harm_log_file", harmLogFile);
+    harmLogPeriodS    = config.value("harm_log_period_s", harmLogPeriodS);
+    harmLogRadiusM    = config.value("harm_log_radius_m", harmLogRadiusM);
+
+    forceBrakeTime         = config.value("force_brake_time", forceBrakeTime);
+    forceBrakeVehicles      = config.value("force_brake_vehicles", forceBrakeVehicles);
+    forceBrakeDuration     = config.value("force_brake_duration", forceBrakeDuration);
+    forceBrakeTargetSpeed  = config.value("force_brake_target_speed", forceBrakeTargetSpeed);
+    forceBrakePosition     = config.value("force_brake_position", forceBrakePosition);
+
+    speedDropThreshold     = config.value("speed_drop_threshold", speedDropThreshold);
+    stationarySpeed        = config.value("stationary_speed", stationarySpeed);
+    wasMovingSpeed         = config.value("was_moving_speed", wasMovingSpeed);
+    includeEthicalAlacarte = config.value("include_ethical_alacarte", includeEthicalAlacarte);
+    chainBrakeFraction     = config.value("chain_brake_fraction", chainBrakeFraction);
 
     NS_LOG_INFO("Configuration loaded from JSON");
   }
   catch (const std::exception& e)
   {
     NS_FATAL_ERROR("Error parsing config.json: " << e.what());
+  }
+
+  std::vector<std::string> brakeVehicles;
+  std::stringstream ss(forceBrakeVehicles);
+  std::string veh;
+
+  while (std::getline(ss, veh, ','))
+  {
+      if (!veh.empty())
+      {
+          brakeVehicles.push_back(veh);
+      }
   }
 
   /*
@@ -218,6 +283,21 @@ main (int argc, char *argv[])
   cmd.AddValue ("met-sup","Use the Metric supervisor or not",m_metric_sup);
   cmd.AddValue ("penetrationRate", "Rate of vehicles equipped with wireless communication devices", penetrationRate);
   cmd.AddValue ("cooperative-detection", "Enable cooperative ethical braking algorithm", cooperativeDetection);
+  cmd.AddValue ("send-denm", "Enable DENM event triggering; set false for a CAM-only baseline", sendDenm);
+  cmd.AddValue ("sigma-mode", "How V2 picks decision-time budget σ: 'computed', 'fixed', or 'scaled'", sigmaMode);
+  cmd.AddValue ("fixed-sigma", "σ override; meaning depends on sigma-mode (seconds or multiplier)", fixedSigma);
+  cmd.AddValue ("harm-log-file", "Output CSV path for the time-sampled pairwise HARM log", harmLogFile);
+  cmd.AddValue ("harm-log-period-s", "Sampling period (s) of the HARM log", harmLogPeriodS);
+  cmd.AddValue ("harm-log-radius-m", "Pairing radius (m) for the HARM log", harmLogRadiusM);
+  cmd.AddValue ("force-brake-time", "Simulation time (s) at which to force a TraCI brake. <= 0 disables.", forceBrakeTime);
+  cmd.AddValue ("force-brake-vehicle", "SUMO vehicle id to brake", forceBrakeVehicles);
+  cmd.AddValue ("force-brake-duration", "Duration (s) over which the forced brake completes", forceBrakeDuration);
+  cmd.AddValue ("force-brake-target-speed", "Target speed (m/s) of the forced brake (0 = full stop)", forceBrakeTargetSpeed);
+  cmd.AddValue ("speed-drop-threshold", "Speed drop (m/s) within 1 s that triggers slowVehicle DENM", speedDropThreshold);
+  cmd.AddValue ("stationary-speed", "Speed (m/s) below which vehicle is considered stopped", stationarySpeed);
+  cmd.AddValue ("was-moving-speed", "Speed (m/s) the vehicle must have exceeded before stationary fires", wasMovingSpeed);
+  cmd.AddValue ("include-ethical-alacarte", "Include custom ethical extension fields in DENM alacarte (off by default while bisecting UPER failures)", includeEthicalAlacarte);
+  cmd.AddValue ("chain-brake-fraction", "Fraction of max_decel V3 uses in the chain/rear branch (1.0 = paper-strict, 0.7 = default)", chainBrakeFraction);
 
   cmd.AddValue ("simTime",
                 "Simulation time in seconds",
@@ -302,6 +382,7 @@ main (int argc, char *argv[])
       LogComponentEnable ("v2v-nrv2x", LOG_LEVEL_INFO);
       LogComponentEnable ("CABasicService", LOG_LEVEL_INFO);
       LogComponentEnable ("DENBasicService", LOG_LEVEL_INFO);
+      LogComponentEnable ("emergencyVehicleAlert", LOG_LEVEL_INFO);
     }
 
   /*
@@ -743,6 +824,15 @@ main (int argc, char *argv[])
       EmergencyVehicleAlertHelper.SetAttribute ("EthicalBraking", BooleanValue (true));
     }
 
+  EmergencyVehicleAlertHelper.SetAttribute ("SendDENM", BooleanValue (sendDenm));
+  EmergencyVehicleAlertHelper.SetAttribute ("SigmaMode", StringValue (sigmaMode));
+  EmergencyVehicleAlertHelper.SetAttribute ("FixedSigma", DoubleValue (fixedSigma));
+  EmergencyVehicleAlertHelper.SetAttribute ("SpeedDropThreshold", DoubleValue (speedDropThreshold));
+  EmergencyVehicleAlertHelper.SetAttribute ("StationarySpeed", DoubleValue (stationarySpeed));
+  EmergencyVehicleAlertHelper.SetAttribute ("WasMovingSpeed", DoubleValue (wasMovingSpeed));
+  EmergencyVehicleAlertHelper.SetAttribute ("IncludeEthicalAlacarte", BooleanValue (includeEthicalAlacarte));
+  EmergencyVehicleAlertHelper.SetAttribute ("ChainBrakeFraction", DoubleValue (chainBrakeFraction));
+
   /* callback function for node creation */
   int i=0;
   STARTUP_FCN setupNewWifiNode = [&] (std::string vehicleID,TraciClient::StationTypeTraCI_t stationType) -> Ptr<Node>
@@ -785,6 +875,74 @@ main (int argc, char *argv[])
   /* start traci client with given function pointers */
   sumoClient->SumoSetup (setupNewWifiNode, shutdownWifiNode);
 
+  /* Time-sampled pairwise HARM log over SUMO ground truth. Independent of
+   * the V2X stack, so it isolates the algorithm's effect from PRR / loss.
+   */
+  Ptr<HarmLogger> harmLogger =
+      Create<HarmLogger> (sumoClient, harmLogFile, harmLogPeriodS, harmLogRadiusM);
+  harmLogger->Start ();
+
+  /* Forced emergency brake. SUMO's planned <stop> tends to use a smooth
+   * deceleration profile that doesn't reliably cross the -4 m/s²
+   * HardBrakeThreshold the application uses. Schedule an explicit
+   * slowDown via TraCI so the brake event is well-defined and the test
+   * is repeatable.
+   *
+   * Set force_brake_time to 0 (or negative) to disable. Useful when
+   * sweeping with a SUMO scenario that already produces the event.
+   */
+  std::set<std::string> brakedVehicles;
+
+  std::function<void()> checkBrake;
+
+  checkBrake = [&]()
+  {
+      for (const auto& v : brakeVehicles)
+      {
+          if (brakedVehicles.count(v))
+          {
+              continue;
+          }
+
+          try
+          {
+              double pos =
+                  sumoClient->TraCIAPI::vehicle.getLanePosition(v);
+
+              if (pos >= forceBrakePosition)
+              {
+                  NS_LOG_UNCOND(
+                      "[" << Simulator::Now().GetSeconds()
+                      << "s] FORCED BRAKE at "
+                      << pos << " m: "
+                      << v);
+
+                  sumoClient->TraCIAPI::vehicle.slowDown(
+                      v,
+                      forceBrakeTargetSpeed,
+                      forceBrakeDuration);
+
+                  sumoClient->TraCIAPI::vehicle.setMaxSpeed(
+                      v,
+                      std::max(forceBrakeTargetSpeed, 0.001));
+
+                  brakedVehicles.insert(v);
+              }
+          }
+          catch (...)
+          {
+              // машина ещё не появилась
+          }
+      }
+
+      Simulator::Schedule(
+          Seconds(1.0),
+          checkBrake);
+  };
+
+  Simulator::Schedule(
+      Seconds(1.0),
+      checkBrake);
   /*** 8. Start Simulation ***/
   Simulator::Stop (Seconds(simTime));
 

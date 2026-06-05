@@ -19,6 +19,9 @@
 */
 
 #include "denBasicService.h"
+
+#include <iostream>
+
 #include "ns3/Seq.hpp"
 #include "ns3/Getter.hpp"
 #include "ns3/Setter.hpp"
@@ -49,6 +52,16 @@ namespace ns3 {
 
     m_DENReceiveCallback = nullptr;
     m_DENReceiveCallbackExtended = nullptr;
+
+    // Default GeoArea: zero-radius circle. Forces the caller to setGeoArea
+    // before transmitting; without this, every transmit path reads stack
+    // garbage and every receiver drops via isInsideGeoArea.
+    m_geoArea.posLat = 0;
+    m_geoArea.posLong = 0;
+    m_geoArea.distA = 0;
+    m_geoArea.distB = 0;
+    m_geoArea.angle = 0;
+    m_geoArea.shape = CIRCULAR;
   }
 
   bool
@@ -558,7 +571,26 @@ namespace ns3 {
 
     /* 6. 7. Construct DENM and pass it to the lower layers (now UDP, in the future BTP and GeoNetworking, then UDP) */
     /** Encoding **/
-    std::string encode_result = asn1cpp::uper::encode(denm);
+    // Bypass asn1cpp::uper::encode so we can inspect the er.failed_type pointer
+    // on failure — the high-level helper hides it. Knowing exactly which ASN.1
+    // type rejected the value is the fastest way to find the wrong field.
+    std::string encode_result;
+    {
+      auto er = uper_encode (
+          denm.getTypeDescriptor (), nullptr,
+          (void *) (&*denm),
+          asn1cpp::Impl::fill, &encode_result);
+      if (er.encoded < 0)
+        {
+          std::cerr << "[DEN ENCODE-FAIL] station=" << m_station_id
+                    << " action=(" << actionid.originatingStationID << ","
+                    << actionid.sequenceNumber << ")"
+                    << " failed_type="
+                    << (er.failed_type ? er.failed_type->name : "<null>")
+                    << std::endl;
+          encode_result.clear ();
+        }
+    }
 
     if(encode_result.size()<1)
     {
@@ -609,6 +641,10 @@ namespace ns3 {
     m_originatingITSSTable[map_index]=entry;
 
     /* 12. Send actionID to the requesting ITS-S application. This is requested by the standard, but we are already reporting the actionID using &actionID */
+
+    NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] [DEN] station " << m_station_id
+                 << " TRIGGER actionId=(" << actionid.originatingStationID << ","
+                 << actionid.sequenceNumber << ") dataConfirm=" << dataConfirm);
 
     return DENM_NO_ERROR;
   }
@@ -710,6 +746,11 @@ namespace ns3 {
       }
 
     T_Repetition_Mutex.unlock();
+
+    NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] [DEN] station " << m_station_id
+                 << " UPDATE actionId=(" << actionid.originatingStationID << ","
+                 << actionid.sequenceNumber << ") dataConfirm=" << dataConfirm);
+
     return DENM_NO_ERROR;
   }
 
@@ -750,10 +791,9 @@ namespace ns3 {
 
     std::map<std::pair<unsigned long,long>, ITSSOriginatingTableEntry>::iterator entry_originating_table = m_originatingITSSTable.find(map_index);
     /* 2a. If actionID exists in the originating ITS-S message table and the entry state is ACTIVE, then set termination to isCancellation.*/
-    if (entry_originating_table != m_originatingITSSTable.end())
+    if (entry_originating_table == m_originatingITSSTable.end())
       {
-        T_Repetition_Mutex.unlock();
-        return DENM_UNKNOWN_ACTIONID_ORIGINATING;
+        /* actionID not in originating table — try receiving table below */
       }
     else if(entry_originating_table->second.getStatus()==ITSSOriginatingTableEntry::STATE_ACTIVE)
       {
@@ -776,10 +816,14 @@ namespace ns3 {
 
     /* 2b. If actionID exists in the receiving ITS-S message table and the entry state is ACTIVE, then set termination to isNegation.*/
     std::map<std::pair<unsigned long,long>, ITSSReceivingTableEntry>::iterator entry_receiving_table = m_receivingITSSTable.find(map_index);
-    if (entry_receiving_table != m_receivingITSSTable.end())
+    if (entry_receiving_table == m_receivingITSSTable.end())
       {
-        T_Repetition_Mutex.unlock();
-        return DENM_UNKNOWN_ACTIONID_RECEIVING;
+        /* actionID not in receiving table */
+        if (entry_originating_table == m_originatingITSSTable.end())
+          {
+            T_Repetition_Mutex.unlock();
+            return DENM_UNKNOWN_ACTIONID;
+          }
       }
     else if(entry_receiving_table->second.getStatus()==ITSSReceivingTableEntry::STATE_ACTIVE)
       {
@@ -828,9 +872,17 @@ namespace ns3 {
     std::map<std::pair<unsigned long,long>, std::tuple<Timer,Timer,Timer>>::iterator entry_timers_table = m_originatingTimerTable.find(map_index);
 
     /* 4b. Stop T_O_Validity, T_RepetitionDuration and T_Repetition (if they were started - this check is already performed by the setTimer* methods) */
-    std::get<V_O_VALIDITY_INDEX>(entry_timers_table->second).Cancel();
-    std::get<T_REPETITION_INDEX>(entry_timers_table->second).Cancel();
-    std::get<T_REPETITION_DURATION_INDEX>(entry_timers_table->second).Cancel();
+    if (entry_timers_table != m_originatingTimerTable.end())
+      {
+        std::get<V_O_VALIDITY_INDEX>(entry_timers_table->second).Cancel();
+        std::get<T_REPETITION_INDEX>(entry_timers_table->second).Cancel();
+        std::get<T_REPETITION_DURATION_INDEX>(entry_timers_table->second).Cancel();
+      }
+    else
+      {
+        /* termination=1 path: no prior originating-timer entry for this actionID; create one */
+        entry_timers_table = m_originatingTimerTable.emplace(map_index, std::tuple<Timer,Timer,Timer>()).first;
+      }
 
     /* 5. Construct DENM and pass it to the lower layers (now UDP, in the future BTP and GeoNetworking, then UDP) */
     /** Encoding **/
@@ -888,6 +940,9 @@ namespace ns3 {
 
     T_Repetition_Mutex.unlock();
 
+    NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] [DEN] station " << m_station_id
+                 << " TERMINATE actionId=(" << actionid.originatingStationID << ","
+                 << actionid.sequenceNumber << ")");
 
     return DENM_NO_ERROR;
   }
@@ -946,6 +1001,10 @@ namespace ns3 {
 
     m_btp->sendBTP(dataRequest, 0, MessageId_denm);
 
+    NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] [DEN] station " << m_station_id
+                 << " FORWARD actionId=(" << actionid.originatingStationID << ","
+                 << actionid.sequenceNumber << ")");
+
     /* No originating table entry or timers — this is a pure forward */
     return DENM_NO_ERROR;
   }
@@ -965,11 +1024,12 @@ namespace ns3 {
     std::pair <unsigned long, long> map_index;
 
     packet = dataIndication.data;
+    uint32_t pktSize = packet ? packet->GetSize () : 0;
 
-    uint8_t *buffer; //= new uint8_t[packet->GetSize ()];
-    buffer=(uint8_t *)malloc((packet->GetSize ())*sizeof(uint8_t));
-    packet->CopyData (buffer, packet->GetSize ());
-    std::string packetContent((char *)buffer,(int) dataIndication.data->GetSize ());
+    uint8_t *buffer;
+    buffer=(uint8_t *)malloc(pktSize*sizeof(uint8_t));
+    if (pktSize > 0) packet->CopyData (buffer, pktSize);
+    std::string packetContent((char *)buffer,(int) pktSize);
 
     RssiTag rssi;
     bool rssi_result = dataIndication.data->PeekPacketTag(rssi);
@@ -1020,9 +1080,9 @@ namespace ns3 {
       }
 
     /* Try to check if the received packet is really a DENM */
-    if (buffer[1]!=FIX_DENMID)
+    if (pktSize < 2 || buffer[1]!=FIX_DENMID)
       {
-        NS_LOG_ERROR("Warning: received a message which has messageID '"<<buffer[1]<<"' but '1' was expected.");
+        NS_LOG_ERROR("Warning: received a message which has messageID '"<<(pktSize >= 2 ? (int)buffer[1] : -1)<<"' but '1' was expected.");
         free(buffer);
         return;
       }
@@ -1137,18 +1197,27 @@ namespace ns3 {
     auto management = asn1cpp::getSeq(decoded_denm->denm.management,ManagementContainer);
     DENBasicService::fillDenDataManagement (management, den_data);
 
-
     auto location = asn1cpp::getSeqOpt(decoded_denm->denm.location,LocationContainer,&location_ok);
-    if(location_ok)
+    // asn1cpp::Impl::Getter<Seq<T>,T>::operator() sets `ok=true` even when
+    // the wrapped Seq is internally null (its copy-ctor / deepCopy BER
+    // round-trip can fail silently for containers with patched-in
+    // extension fields — e.g. AlacarteContainer here). Gate the fill
+    // calls on the Seq itself, not just `*_ok`, so we never deref a
+    // nullptr inside fillDenData*.
+    if(location_ok && location)
         DENBasicService::fillDenDataLocation (location, den_data);
 
     auto situation = asn1cpp::getSeqOpt(decoded_denm->denm.situation,SituationContainer,&situation_ok);
-    if(situation_ok)
+    if(situation_ok && situation)
         DENBasicService::fillDenDataSituation (situation, den_data);
 
     auto alacarte = asn1cpp::getSeqOpt(decoded_denm->denm.alacarte,AlacarteContainer,&alacarte_ok);
-    if(alacarte_ok)
+    if(alacarte_ok && alacarte)
         DENBasicService::fillDenDataAlacarte (alacarte, den_data);
+
+    NS_LOG_INFO ("[" << Simulator::Now ().GetSeconds () << "s] [DEN] station " << m_station_id
+                 << " RECEIVE actionId=(" << actionID.originatingStationID << ","
+                 << actionID.sequenceNumber << ")");
 
     if(m_DENReceiveCallback!=nullptr) {
       m_DENReceiveCallback(den_data,from);
@@ -1252,7 +1321,7 @@ namespace ns3 {
   }
 
   void
-  DENBasicService::fillDenDataHeader(asn1cpp::Seq<ItsPduHeader>denm_header, denData &denm_data)
+  DENBasicService::fillDenDataHeader(const asn1cpp::Seq<ItsPduHeader> &denm_header, denData &denm_data)
   {
       denm_data.setDenmHeader (asn1cpp::getField(denm_header->messageId,long),
                                asn1cpp::getField(denm_header->protocolVersion,long),
@@ -1260,7 +1329,7 @@ namespace ns3 {
   }
 
   void
-  DENBasicService::fillDenDataManagement(asn1cpp::Seq<ManagementContainer> denm_mgmt_container, denData &denm_data)
+  DENBasicService::fillDenDataManagement(const asn1cpp::Seq<ManagementContainer> &denm_mgmt_container, denData &denm_data)
   {
     denData::denDataManagement management;
     bool ok;
@@ -1301,7 +1370,7 @@ namespace ns3 {
   }
 
   void
-  DENBasicService::fillDenDataSituation(asn1cpp::Seq<SituationContainer> denm_situation_container, denData &denm_data)
+  DENBasicService::fillDenDataSituation(const asn1cpp::Seq<SituationContainer> &denm_situation_container, denData &denm_data)
   {
     denData::denDataSituation situation;
     bool ok;
@@ -1347,17 +1416,25 @@ namespace ns3 {
   }
 
   void
-  DENBasicService::fillDenDataLocation(asn1cpp::Seq<LocationContainer> denm_location_container, denData &denm_data)
+  DENBasicService::fillDenDataLocation(const asn1cpp::Seq<LocationContainer> &denm_location_container, denData &denm_data)
   {
     denData::denDataLocation location;
     bool ok;
 
+    // Traces is SEQUENCE SIZE(1..7) OF PathHistory, PathHistory is
+    // SEQUENCE SIZE(0..40) OF PathPoint. Previous code hardcoded
+    //   for(i=0; i<3; i++) { for(j=0; j<3; j++) ... }
+    // which reads past the actual length whenever the sender (i.e.
+    // our own TriggerDenm) only set 1 trace with 1 point — undefined
+    // behaviour, segfault on the receiver. Use the real sequence size.
     auto traces = asn1cpp::getSeq(denm_location_container->traces,Traces);
-    for(int i=0; i<3;i++)
+    int traces_size = asn1cpp::sequenceof::getSize(*traces);
+    for(int i=0; i<traces_size; i++)
       {
         auto pathHistory = asn1cpp::sequenceof::getSeq(*traces,Path,i);
         std::vector<DEN_PathPoint_t> pathHistory_data;
-        for(int j=0;j<3;j++)
+        int path_size = asn1cpp::sequenceof::getSize(*pathHistory);
+        for(int j=0; j<path_size; j++)
           {
             auto pathPoint = asn1cpp::sequenceof::getSeq(*pathHistory,PathPoint,j);
             DEN_PathPoint_t pathPoint_data;
@@ -1373,15 +1450,26 @@ namespace ns3 {
         location.traces.push_back (pathHistory_data);
       }
 
-    auto speed = asn1cpp::getField(denm_location_container->eventSpeed->speedValue,long,&ok);
+    // eventSpeed and eventPositionHeading are OPTIONAL — i.e. nullable
+    // pointers in the C struct. Dereferencing -> field without a NULL
+    // check is what crashed when TriggerDenm built a location container
+    // with only eventSpeed but no eventPositionHeading. Use getSeqOpt
+    // which yields a "ok" bit and only touches the pointer on hit.
+    auto eventSpeed = asn1cpp::getSeqOpt(denm_location_container->eventSpeed,Speed,&ok);
     if(ok)
-      location.eventSpeed.setData (DENValueConfidence<long,long>(speed,
-                  asn1cpp::getField(denm_location_container->eventSpeed->speedConfidence,long)));
+      {
+        long speed = asn1cpp::getField(eventSpeed->speedValue,long);
+        long speedConf = asn1cpp::getField(eventSpeed->speedConfidence,long);
+        location.eventSpeed.setData (DENValueConfidence<long,long>(speed, speedConf));
+      }
 
-    auto heading = asn1cpp::getField(denm_location_container->eventPositionHeading->headingValue,long,&ok);
+    auto eventHeading = asn1cpp::getSeqOpt(denm_location_container->eventPositionHeading,Heading,&ok);
     if(ok)
-      location.eventPositionHeading.setData (DENValueConfidence<long,long>(heading,
-                  asn1cpp::getField(denm_location_container->eventPositionHeading->headingConfidence,long)));
+      {
+        long heading = asn1cpp::getField(eventHeading->headingValue,long);
+        long headingConf = asn1cpp::getField(eventHeading->headingConfidence,long);
+        location.eventPositionHeading.setData (DENValueConfidence<long,long>(heading, headingConf));
+      }
 
     auto roadType = asn1cpp::getField(denm_location_container->roadType,long,&ok);
     if(ok)
@@ -1392,7 +1480,7 @@ namespace ns3 {
   }
 
   void
-  DENBasicService::fillDenDataAlacarte(asn1cpp::Seq<AlacarteContainer> denm_alacarte_container, denData &denm_data)
+  DENBasicService::fillDenDataAlacarte(const asn1cpp::Seq<AlacarteContainer> &denm_alacarte_container, denData &denm_data)
   {
     denData::denDataAlacarte alacarte;
     bool ok;
@@ -1624,6 +1712,6 @@ namespace ns3 {
     if(ok)
       alacarte.vehicleMass.setData (ethMass);
 
-   denm_data.setDenmAlacarteData_asn_types (alacarte);
+    denm_data.setDenmAlacarteData_asn_types (alacarte);
   }
 }

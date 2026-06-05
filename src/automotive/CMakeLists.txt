@@ -50,6 +50,8 @@ Set(source_files
     model/utilities/sumo_xml_parser.cc
     model/Applications/v2xEmulator.cc
     model/Measurements/MetricSupervisor.cc
+    model/Measurements/harm-util.cc
+    model/Measurements/HarmLogger.cc
         model/Facilities/ividata.cc
     model/Facilities/iviService.cc
     model/Facilities/BSMap.cc
@@ -1327,6 +1329,8 @@ Set(source_files
 set(header_files
     model/LOS-NLOS/los_nlos.h
     model/Measurements/MetricSupervisor.h
+    model/Measurements/harm-util.h
+    model/Measurements/HarmLogger.h
     helper/areaSpeedAdvisorClientLTE-helper.h
     helper/areaSpeedAdvisorServerLTE-helper.h
     helper/areaSpeedAdvisorClient80211p-helper.h

@@ -45,6 +45,7 @@ run_variant() {
     find . -maxdepth 1 -name "run-*-CAM.csv"     -exec mv {} "${logs_csv}/" \; 2>/dev/null || true
     find . -maxdepth 1 -name "run-*-MSGLOG.csv"  -exec mv {} "${logs_csv}/" \; 2>/dev/null || true
     find . -maxdepth 1 -name "run-*-COOP.csv"    -exec mv {} "${logs_csv}/" \; 2>/dev/null || true
+    find . -maxdepth 1 -name "*_prr_per_vehicle_messagetype.csv" -exec mv {} "${run_dir}/" \; 2>/dev/null || true
     [[ -f harm_log.csv ]] && mv harm_log.csv "${logs_harm}/" 2>/dev/null || true
 }
 

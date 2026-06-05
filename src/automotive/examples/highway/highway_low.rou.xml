@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vehicle id="veh0" depart="0.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh1" depart="1.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh2" depart="3.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh3" depart="4.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh4" depart="6.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh5" depart="7.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh6" depart="9.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh7" depart="10.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh8" depart="12.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh9" depart="13.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh10" depart="15.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh11" depart="16.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh12" depart="18.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh13" depart="19.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh14" depart="21.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh15" depart="22.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh16" depart="24.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh17" depart="25.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh18" depart="27.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh19" depart="28.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh20" depart="30.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh21" depart="31.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh22" depart="33.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh23" depart="34.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh24" depart="36.00">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh25" depart="37.50">
+        <route edges="AB"/>
+    </vehicle>
+    <vehicle id="veh26" depart="39.00">
+        <route edges="AB"/>
+    </vehicle>
+</routes>

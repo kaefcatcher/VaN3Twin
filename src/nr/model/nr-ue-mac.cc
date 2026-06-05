@@ -368,6 +368,14 @@ NrUeMac::GetTypeId (void)
                     MakeUintegerAccessor (&NrUeMac::SetResourcePercentage,
                                           &NrUeMac::GetResourcePercentage),
                     MakeUintegerChecker<uint8_t> (1, 100))
+     .AddAttribute ("SlFixedReselectionCounter",
+                    "If non-zero, overrides the random SL resource reselection counter "
+                    "(Cresel) of TS 38.214 with this fixed value. A value of 1 yields fully "
+                    "dynamic (per-transmission) resource selection; larger values emulate "
+                    "semi-persistent scheduling. 0 (default) keeps the standard random counter.",
+                    UintegerValue (0),
+                    MakeUintegerAccessor (&NrUeMac::m_slFixedReselectionCounter),
+                    MakeUintegerChecker<uint8_t> ())
     .AddTraceSource ("SlPscchScheduling",
                      "Information regarding NR SL PSCCH UE scheduling",
                      MakeTraceSourceAccessor (&NrUeMac::m_slPscchScheduling),
@@ -2480,6 +2488,16 @@ NrUeMac::GetReservationPeriod () const
 uint8_t
 NrUeMac::GetRndmReselectionCounter () const
 {
+  // When a fixed reselection counter is configured, bypass the random draw of
+  // TS 38.214 entirely. SlFixedReselectionCounter = 1 makes the UE reselect
+  // resources on every transmission (dynamic scheduling); larger values pin a
+  // semi-persistent grant length.
+  if (m_slFixedReselectionCounter > 0)
+    {
+      NS_LOG_DEBUG ("Using fixed SL reselection counter: " << +m_slFixedReselectionCounter);
+      return m_slFixedReselectionCounter;
+    }
+
   uint8_t min;
   uint8_t max;
   uint16_t periodInt = static_cast <uint16_t> (m_pRsvpTx.GetMilliSeconds ());

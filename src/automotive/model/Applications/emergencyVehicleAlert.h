@@ -187,6 +187,8 @@ private:
   bool m_send_cam;
   bool m_send_cpm;
   bool m_send_denm;
+  uint32_t m_denm_copies;        //!< Number of copies transmitted per triggered DENM (>=1)
+  double m_denm_copy_spacing_ms; //!< Spacing [ms] between consecutive DENM copies
 
   /* Event detection */
   bool m_is_event_active;

@@ -128,7 +128,18 @@ def variant_sort_key(label: str) -> tuple[int, float, str]:
     m = re.match(r"txpower_([0-9.]+)$", label)
     if m:
         return (5, float(m.group(1)), label)
-    return (6, 0.0, label)
+    if label == "dynamic":
+        return (6, -1.0, label)
+    m = re.match(r"sps_pkeep_([0-9.]+)$", label)
+    if m:
+        return (6, float(m.group(1)), label)
+    return (7, 0.0, label)
+
+
+def natural_key(vehicle_id: str) -> tuple[int, int, str]:
+    """Sort 'veh2' before 'veh10' by the trailing integer."""
+    m = re.search(r"(\d+)", vehicle_id)
+    return (0, int(m.group(1)), vehicle_id) if m else (1, 0, vehicle_id)
 
 
 def discover_runs(root: str) -> list[str]:
@@ -213,6 +224,109 @@ def print_deltas(rows: list[RunSummary]) -> None:
         )
 
 
+def load_pairwise_harm(
+    path: str,
+) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float]]:
+    """Aggregate the pairwise HARM log into per-pair time-integral and peak.
+
+    The HarmLogger writes one row per in-range vehicle pair per tick
+    (time,car1ID,car2ID,harm,energy). For each unordered pair we integrate the
+    HARM over time (trapezoid) and track its peak, giving two compact per-pair
+    scalars that are easy to render as a matrix / heatmap.
+    """
+    series: dict[tuple[str, str], list[tuple[float, float]]] = defaultdict(list)
+    with open(path, "r") as f:
+        header = next(csv.reader([f.readline()]))
+        if "harm" not in header:
+            return {}, {}
+        i_harm = header.index("harm")
+        for row in csv.reader(f):
+            if len(row) <= i_harm:
+                continue
+            try:
+                t = float(row[0])
+                h = float(row[i_harm])
+            except (ValueError, IndexError):
+                continue
+            a, b = row[1], row[2]
+            key = (a, b) if a <= b else (b, a)
+            series[key].append((t, h))
+
+    pair_integral: dict[tuple[str, str], float] = {}
+    pair_peak: dict[tuple[str, str], float] = {}
+    for key, pts in series.items():
+        pts.sort()
+        ts = [p[0] for p in pts]
+        hs = [p[1] for p in pts]
+        pair_integral[key] = trapezoid(ts, hs)
+        pair_peak[key] = max(hs) if hs else 0.0
+    return pair_integral, pair_peak
+
+
+def make_pairwise_harm_heatmap(
+    run_dir: str, plots_dir: str, top_k: int = 30, metric: str = "integral"
+) -> None:
+    """Render a pairwise HARM matrix (heatmap + CSV) for a single run.
+
+    Rows/columns are the top_k vehicles by total HARM involvement; cell (i, j)
+    is the chosen per-pair aggregate (time-integrated HARM by default). This
+    surfaces *which* vehicle pairs dominate the risk, which the time-series plot
+    alone cannot show.
+    """
+    harm_path = os.path.join(run_dir, "harm_log", "harm_log.csv")
+    if not os.path.isfile(harm_path):
+        return
+    pair_integral, pair_peak = load_pairwise_harm(harm_path)
+    pairs = pair_integral if metric == "integral" else pair_peak
+    if not pairs:
+        return
+
+    totals: dict[str, float] = defaultdict(float)
+    for (a, b), v in pairs.items():
+        totals[a] += v
+        totals[b] += v
+    order = sorted(totals, key=lambda k: totals[k], reverse=True)[:top_k]
+    order = sorted(order, key=natural_key)
+    idx = {v: i for i, v in enumerate(order)}
+    n = len(order)
+    matrix = [[0.0] * n for _ in range(n)]
+    for (a, b), v in pairs.items():
+        if a in idx and b in idx:
+            matrix[idx[a]][idx[b]] = v
+            matrix[idx[b]][idx[a]] = v
+
+    os.makedirs(plots_dir, exist_ok=True)
+    label = label_from_variant_dir(run_dir)
+
+    csv_out = os.path.join(plots_dir, f"pairwise_harm_matrix_{label}.csv")
+    with open(csv_out, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["vehicle", *order])
+        for v in order:
+            w.writerow([v, *(f"{matrix[idx[v]][idx[u]]:.6g}" for u in order)])
+    print(f"pairwise HARM matrix saved: {csv_out}")
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not available; skipping HARM heatmap", file=sys.stderr)
+        return
+    fig, ax = plt.subplots(figsize=(max(6, n * 0.35), max(5, n * 0.32)))
+    im = ax.imshow(matrix, cmap="hot_r", aspect="auto")
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(order, rotation=90, fontsize=6)
+    ax.set_yticklabels(order, fontsize=6)
+    metric_name = "∫ HARM dt" if metric == "integral" else "peak HARM"
+    ax.set_title(f"Pairwise {metric_name} — {label} (top {n} vehicles)")
+    fig.colorbar(im, ax=ax, label=metric_name)
+    fig.tight_layout()
+    out = os.path.join(plots_dir, f"pairwise_harm_heatmap_{label}.png")
+    fig.savefig(out, dpi=120)
+    plt.close(fig)
+    print(f"pairwise HARM heatmap saved: {out}")
+
+
 def make_plots(rows: list[RunSummary], plots_dir: str) -> None:
     try:
         import matplotlib.pyplot as plt
@@ -285,6 +399,8 @@ def main() -> int:
     if args.plot:
         plots_dir = args.plots_dir or os.path.join(args.results_dir, "plots")
         make_plots(summaries, plots_dir)
+        for run in runs:
+            make_pairwise_harm_heatmap(run, plots_dir)
     return 0
 
 

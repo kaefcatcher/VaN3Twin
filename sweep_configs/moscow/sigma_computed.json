@@ -16,7 +16,7 @@
   "m_baseline_prr": 150.0,
   "m_metric_sup": true,
   "send_denm": true,
-  "cooperative_detection": false,
+  "cooperative_detection": true,
   "sigma_mode": "computed",
   "fixed_sigma": 0.5,
   "include_ethical_alacarte": false,
@@ -35,6 +35,6 @@
   "was_moving_speed": 5.0,
   "csv_name_cumulative": "results",
   "sumo_folder": "src/automotive/examples/moscow/",
-  "mob_trace": "routes100.rou.xml",
+  "mob_trace": "routes1000.rou.xml",
   "sumo_config": "src/automotive/examples/moscow/moscow.sumocfg"
 }

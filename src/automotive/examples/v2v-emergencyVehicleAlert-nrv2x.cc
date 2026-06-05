@@ -41,6 +41,9 @@
 #include "ns3/HarmLogger.h"
 #include "json.hpp"
 #include <fstream>
+#include <vector>
+#include <sstream>
+#include <set>
 
 #include <unistd.h>
 #include "ns3/core-module.h"
@@ -140,9 +143,10 @@ main (int argc, char *argv[])
   // otherwise decelerate too smoothly to fire the HardBrakeThreshold gate.
   // forceBrakeTime <= 0 disables the feature.
   double forceBrakeTime = 15.0;            // seconds of simulation time
-  std::string forceBrakeVehicle = "veh0";   // SUMO vehicle id to brake
+  std::string forceBrakeVehicles = "veh0";   // SUMO vehicle id to brake
   double forceBrakeDuration = 1.0;          // seconds to reach speed 0
   double forceBrakeTargetSpeed = 0.0;       // m/s
+  double forceBrakePosition = 2500.0;
 
   // Single-vehicle DENM trigger thresholds (cause 26 / 94). Lenient
   // defaults so any meaningful brake event fires a DENM.
@@ -227,9 +231,10 @@ main (int argc, char *argv[])
     harmLogRadiusM    = config.value("harm_log_radius_m", harmLogRadiusM);
 
     forceBrakeTime         = config.value("force_brake_time", forceBrakeTime);
-    forceBrakeVehicle      = config.value("force_brake_vehicle", forceBrakeVehicle);
+    forceBrakeVehicles      = config.value("force_brake_vehicles", forceBrakeVehicles);
     forceBrakeDuration     = config.value("force_brake_duration", forceBrakeDuration);
     forceBrakeTargetSpeed  = config.value("force_brake_target_speed", forceBrakeTargetSpeed);
+    forceBrakePosition     = config.value("force_brake_position", forceBrakePosition);
 
     speedDropThreshold     = config.value("speed_drop_threshold", speedDropThreshold);
     stationarySpeed        = config.value("stationary_speed", stationarySpeed);
@@ -242,6 +247,18 @@ main (int argc, char *argv[])
   catch (const std::exception& e)
   {
     NS_FATAL_ERROR("Error parsing config.json: " << e.what());
+  }
+
+  std::vector<std::string> brakeVehicles;
+  std::stringstream ss(forceBrakeVehicles);
+  std::string veh;
+
+  while (std::getline(ss, veh, ','))
+  {
+      if (!veh.empty())
+      {
+          brakeVehicles.push_back(veh);
+      }
   }
 
   /*
@@ -273,7 +290,7 @@ main (int argc, char *argv[])
   cmd.AddValue ("harm-log-period-s", "Sampling period (s) of the HARM log", harmLogPeriodS);
   cmd.AddValue ("harm-log-radius-m", "Pairing radius (m) for the HARM log", harmLogRadiusM);
   cmd.AddValue ("force-brake-time", "Simulation time (s) at which to force a TraCI brake. <= 0 disables.", forceBrakeTime);
-  cmd.AddValue ("force-brake-vehicle", "SUMO vehicle id to brake", forceBrakeVehicle);
+  cmd.AddValue ("force-brake-vehicle", "SUMO vehicle id to brake", forceBrakeVehicles);
   cmd.AddValue ("force-brake-duration", "Duration (s) over which the forced brake completes", forceBrakeDuration);
   cmd.AddValue ("force-brake-target-speed", "Target speed (m/s) of the forced brake (0 = full stop)", forceBrakeTargetSpeed);
   cmd.AddValue ("speed-drop-threshold", "Speed drop (m/s) within 1 s that triggers slowVehicle DENM", speedDropThreshold);
@@ -874,55 +891,58 @@ main (int argc, char *argv[])
    * Set force_brake_time to 0 (or negative) to disable. Useful when
    * sweeping with a SUMO scenario that already produces the event.
    */
-  if (forceBrakeTime > 0.0)
-    {
-      Simulator::Schedule (
-          Seconds (forceBrakeTime),
-          [sumoClient, forceBrakeVehicle, forceBrakeTargetSpeed, forceBrakeDuration] () {
-            try
-              {
-                NS_LOG_UNCOND ("[" << Simulator::Now ().GetSeconds ()
-                               << "s] FORCED BRAKE: " << forceBrakeVehicle
-                               << " slowDown(target=" << forceBrakeTargetSpeed
-                               << " m/s, duration=" << forceBrakeDuration << "s)");
-                sumoClient->TraCIAPI::vehicle.slowDown (
-                    forceBrakeVehicle, forceBrakeTargetSpeed, forceBrakeDuration);
-              }
-            catch (const std::exception &e)
-              {
-                std::cerr << "FORCED BRAKE failed: " << e.what () << std::endl;
-              }
-          });
+  std::set<std::string> brakedVehicles;
 
-      // After the slowDown completes, cap the vehicle's max speed at the
-      // target speed so SUMO doesn't let it accelerate back to free flow.
-      // For target=0 this keeps V1 parked at its stop position for the
-      // rest of the simulation — which is what makes the scenario a real
-      // collision-risk test and not a "brake briefly and resume" anti-test.
-      Simulator::Schedule (
-          Seconds (forceBrakeTime + forceBrakeDuration),
-          [sumoClient, forceBrakeVehicle, forceBrakeTargetSpeed] () {
-            try
-              {
-                NS_LOG_UNCOND ("[" << Simulator::Now ().GetSeconds ()
-                               << "s] FORCED BRAKE: " << forceBrakeVehicle
-                               << " setMaxSpeed=" << forceBrakeTargetSpeed
-                               << " (stays parked)");
-                sumoClient->TraCIAPI::vehicle.setMaxSpeed (
-                    forceBrakeVehicle, std::max (forceBrakeTargetSpeed, 0.001));
-                // Belt-and-braces: also explicitly setSpeed(target). This
-                // makes the vehicle freeze at the target speed regardless
-                // of what its car-follower model would have decided.
-                sumoClient->TraCIAPI::vehicle.setSpeed (
-                    forceBrakeVehicle, forceBrakeTargetSpeed);
-              }
-            catch (const std::exception &e)
-              {
-                std::cerr << "FORCED BRAKE post-stop failed: " << e.what () << std::endl;
-              }
-          });
-    }
+  std::function<void()> checkBrake;
 
+  checkBrake = [&]()
+  {
+      for (const auto& v : brakeVehicles)
+      {
+          if (brakedVehicles.count(v))
+          {
+              continue;
+          }
+
+          try
+          {
+              double pos =
+                  sumoClient->TraCIAPI::vehicle.getLanePosition(v);
+
+              if (pos >= forceBrakePosition)
+              {
+                  NS_LOG_UNCOND(
+                      "[" << Simulator::Now().GetSeconds()
+                      << "s] FORCED BRAKE at "
+                      << pos << " m: "
+                      << v);
+
+                  sumoClient->TraCIAPI::vehicle.slowDown(
+                      v,
+                      forceBrakeTargetSpeed,
+                      forceBrakeDuration);
+
+                  sumoClient->TraCIAPI::vehicle.setMaxSpeed(
+                      v,
+                      std::max(forceBrakeTargetSpeed, 0.001));
+
+                  brakedVehicles.insert(v);
+              }
+          }
+          catch (...)
+          {
+              // машина ещё не появилась
+          }
+      }
+
+      Simulator::Schedule(
+          Seconds(1.0),
+          checkBrake);
+  };
+
+  Simulator::Schedule(
+      Seconds(1.0),
+      checkBrake);
   /*** 8. Start Simulation ***/
   Simulator::Stop (Seconds(simTime));
 

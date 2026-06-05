@@ -22,7 +22,7 @@
   "include_ethical_alacarte": false,
   "chain_brake_fraction": 1.0,
   "force_brake_time": -1,
-  "force_brake_position": 50.0,
+  "force_brake_position": 2500.0,
   "force_brake_vehicles": "veh0,veh1,veh2,veh3,veh4,veh5,veh6,veh7,veh8,veh9",
   "force_brake_duration": 1.0,
   "force_brake_target_speed": 0.0,
@@ -34,7 +34,7 @@
   "stationary_speed": 1.0,
   "was_moving_speed": 5.0,
   "csv_name_cumulative": "results",
-  "sumo_folder": "src/automotive/examples/moscow/",
-  "mob_trace": "routes100.rou.xml",
-  "sumo_config": "src/automotive/examples/moscow/moscow.sumocfg"
+  "sumo_folder": "src/automotive/examples/highway/",
+  "mob_trace": "highway700.rou.xml",
+  "sumo_config": "src/automotive/examples/highway/highway.sumocfg"
 }

@@ -47,7 +47,7 @@
            actionStepLength="1.0" mass="1500"
            carFollowModel="Krauss" color="1,1,0"/>
 
-    <vType id="follower" accel="3.0" decel="4.0" emergencyDecel="6.0"
+    <vType id="follower" accel="3.0" decel="4.0" emergencyDecel="3.0"
            maxSpeed="20" minGap="0.5" tau="0.6" length="5.0" sigma="0.0"
            actionStepLength="1.0" mass="1200"
            carFollowModel="Krauss" color="0,0,1"/>

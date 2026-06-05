@@ -17,10 +17,19 @@
 
   "m_baseline_prr": 150.0,
   "m_metric_sup": true,
+  "send_denm": true,
+  "cooperative_detection": false,
+  "sigma_mode": "computed",
+  "include_ethical_alacarte": false,
 
+  "harm_log_file": "harm_log.csv",
+  "harm_log_period_s": 0.1,
+  "harm_log_radius_m": 150.0,
+  "csv_log": "run",
+  "speed_drop_threshold": 3.0,
   "csv_name_cumulative": "results",
 
   "sumo_folder": "src/automotive/examples/moscow/",
-  "mob_trace": "routes1000.rou.xml",
+  "mob_trace": "routes100.rou.xml",
   "sumo_config": "src/automotive/examples/moscow/moscow.sumocfg"
 }

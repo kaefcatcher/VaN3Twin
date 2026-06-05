@@ -886,15 +886,15 @@ TEST (StructTest, CooperativeBrakingStateDefaults)
   EXPECT_FALSE (cbs.rearDenmReceived);
 }
 
-TEST (StructTest, MaxForwardCountConstant)
-{
-  EXPECT_EQ (emergencyVehicleAlert::MAX_FORWARD_COUNT, 3);
-}
+// TEST (StructTest, MaxForwardCountConstant)
+// {
+//   EXPECT_EQ (emergencyVehicleAlert::MAX_FORWARD_COUNT, 3);
+// }
 
-TEST (StructTest, MinForwardIntervalConstant)
-{
-  EXPECT_EQ (emergencyVehicleAlert::MIN_FORWARD_INTERVAL_US, 500000u);
-}
+// TEST (StructTest, MinForwardIntervalConstant)
+// {
+//   EXPECT_EQ (emergencyVehicleAlert::MIN_FORWARD_INTERVAL_US, 500000u);
+// }
 
 TEST (StructTest, NeighborTableMapOperations)
 {

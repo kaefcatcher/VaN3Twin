@@ -121,14 +121,7 @@ SCENARIOS = {
         "force_brake_position": HIGHWAY_BRAKE_POS,
         "cbr_level": "high",
     },
-    "moscow_large": {
-        "sumo_folder": f"{EX}/moscow/",
-        "mob_trace": "routes1000.rou.xml",   # both algo on/off use the SAME (large) traffic
-        "sumo_config": f"{EX}/moscow/moscow.sumocfg",
-        "simTime": 22.5,
-        "force_brake_position": 50.0,
-        "cbr_level": "na",
-    },
+    # moscow_large (routes1000) removed: 1000 vehicles is too heavy for the campaign.
 }
 
 # Group-B network points (applied to highway_mid): label-stub -> (scheduling, pkeep, copies, overrides)
@@ -221,7 +214,7 @@ def main() -> int:
     print(f"campaign_main:    {n_main_cfg} configs x {len(SEEDS)} = {len(main_rows)} runs")
     print(f"campaign_network: {n_net_cfg} configs x {len(SEEDS)} = {len(net_rows)} runs")
     print(f"TOTAL RUNS: {len(main_rows) + len(net_rows)}  "
-          f"(each ns-3+SUMO run is minutes; moscow/highway-high are the long poles)")
+          f"(each ns-3+SUMO run is minutes; highway-high is the long pole)")
     print("\nRun:  ./run_campaign.sh   (or ./run_sweep.sh campaign_main && ./run_sweep.sh campaign_network)")
     return 0
 

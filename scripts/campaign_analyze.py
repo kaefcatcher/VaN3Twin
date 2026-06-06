@@ -38,9 +38,9 @@ from analyze import (  # scripts/ is sys.path[0] when run as a script
     trapezoid,
 )
 
-SCENARIO_ORDER = ["basic", "highway_low", "highway_mid", "highway_high", "moscow_large"]
+SCENARIO_ORDER = ["basic", "highway_low", "highway_mid", "highway_high"]
 SCENARIO_LABEL = {"basic": "basic", "highway_low": "hw-low", "highway_mid": "hw-mid",
-                  "highway_high": "hw-high", "moscow_large": "moscow"}
+                  "highway_high": "hw-high"}
 ALGO_COLOR = {0: "#9e9e9e", 1: "#1f77b4"}   # no-algo grey, algo blue
 ALGO_NAME = {0: "no-algo", 1: "algo"}
 METRICS = ["prr", "denm_prr", "cam_prr", "cbr", "latency_ms",
@@ -469,7 +469,7 @@ def main() -> int:
         fig6_denm_copies(net_groups, args.out, plt)
 
     if not args.no_heatmaps:
-        for s in ("highway_high", "moscow_large"):
+        for s in ("highway_mid", "highway_high"):
             for algo in (0, 1):
                 hit = [g for g in main_groups.values()
                        if g["scenario"] == s and g["algo"] == algo]

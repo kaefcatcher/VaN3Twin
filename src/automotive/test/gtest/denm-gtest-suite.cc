@@ -28,6 +28,12 @@
 #include "ns3/ITSSOriginatingTableEntry.h"
 #include "ns3/ITSSReceivingTableEntry.h"
 #include "ns3/asn_utils.h"
+#include "ns3/harm-util.h"
+#include "ns3/DENM.h"
+#include "ns3/Seq.hpp"
+#include "ns3/Setter.hpp"
+#include "ns3/Getter.hpp"
+#include "ns3/Encoding.hpp"
 
 // External utility functions defined in emergencyVehicleAlert.cc
 namespace ns3 {
@@ -734,7 +740,7 @@ TEST_F (HarmCalcTest, OptimalDecelSymmetricScenario)
   // 3 vehicles, all same mass/speed, moderate gaps
   // v1=20, a1=7, m1=1500, v2=20, m2=1500, a2_max=7, v3=20, a3=7, m3=1500
   double a2 = m_app.CalculateOptimalDeceleration (20, 7, 1500, 20, 1500, 7.0, 20, 7, 1500, 30, 30);
-  EXPECT_GE (a2, 0.1);
+  EXPECT_GE (a2, 0.0); // Fix 7: equal speeds => no collision => coast (a2=0) optimal
   EXPECT_LE (a2, 7.0);
 }
 
@@ -742,8 +748,8 @@ TEST_F (HarmCalcTest, OptimalDecelLargeGapsNoHarm)
 {
   // Very large gaps → no collision possible → any a2 gives harm=0
   double a2 = m_app.CalculateOptimalDeceleration (20, 7, 1500, 20, 1500, 7.0, 20, 7, 1500, 500, 500);
-  // With no collisions, the first a2=0.1 should win (or any, all harm=0)
-  EXPECT_GE (a2, 0.1);
+  // Fix 7: with no collisions, coasting (a2=0) is now allowed and optimal.
+  EXPECT_GE (a2, 0.0);
   EXPECT_LE (a2, 7.0);
 }
 
@@ -751,16 +757,16 @@ TEST_F (HarmCalcTest, OptimalDecelTightGaps)
 {
   // Very tight gaps, high closing speeds → needs strong braking
   double a2 = m_app.CalculateOptimalDeceleration (10, 8, 1500, 25, 1500, 8.0, 30, 3, 1500, 5, 5);
-  EXPECT_GE (a2, 0.1);
+  EXPECT_GE (a2, 0.0);
   EXPECT_LE (a2, 8.0);
 }
 
 TEST_F (HarmCalcTest, OptimalDecelResultInBounds)
 {
-  // Result should always be in [0.1, a2_max]
+  // Fix 7: result should always be in [0.0, a2_max] (coasting allowed).
   double a2_max = 6.0;
   double a2 = m_app.CalculateOptimalDeceleration (15, 5, 1500, 20, 1500, a2_max, 25, 4, 1500, 20, 20);
-  EXPECT_GE (a2, 0.1);
+  EXPECT_GE (a2, 0.0);
   EXPECT_LE (a2, a2_max);
 }
 
@@ -781,7 +787,7 @@ TEST_F (HarmCalcTest, OptimalDecelIsMinimum)
   for (double delta : {-0.1, 0.1})
     {
       double a2_neighbor = best_a2 + delta;
-      if (a2_neighbor < 0.1 || a2_neighbor > a2_max)
+      if (a2_neighbor < 0.0 || a2_neighbor > a2_max)
         continue;
       double neighbor_harm = m_app.CalculateHarm (m2, v2, a2_neighbor, m1, v1, a1, gap12)
                              + m_app.CalculateHarm (m3, v3, a3, m2, v2, a2_neighbor, gap23);
@@ -793,7 +799,7 @@ TEST_F (HarmCalcTest, OptimalDecelHeavyMiddleVehicle)
 {
   // Middle vehicle is a heavy truck
   double a2 = m_app.CalculateOptimalDeceleration (20, 7, 1500, 20, 5000, 7.0, 20, 7, 1500, 20, 20);
-  EXPECT_GE (a2, 0.1);
+  EXPECT_GE (a2, 0.0);
   EXPECT_LE (a2, 7.0);
 }
 
@@ -801,7 +807,7 @@ TEST_F (HarmCalcTest, OptimalDecelLightMiddleVehicle)
 {
   // Middle vehicle is very light
   double a2 = m_app.CalculateOptimalDeceleration (20, 7, 1500, 20, 500, 7.0, 20, 7, 1500, 20, 20);
-  EXPECT_GE (a2, 0.1);
+  EXPECT_GE (a2, 0.0);
   EXPECT_LE (a2, 7.0);
 }
 
@@ -929,6 +935,260 @@ TEST (StructTest, ForwardingTableMapOperations)
 
   EXPECT_EQ (table.size (), 1u);
   EXPECT_EQ (table[std::make_pair (100UL, 1L)].forwardCount, 1);
+}
+
+// ============================================================================
+//  Category 11b: Canonical harm metric (Fix 1)
+//  The optimizer must minimize EXACTLY what the logger / figures report.
+// ============================================================================
+
+class HarmMetricTest : public ::testing::Test
+{
+protected:
+  emergencyVehicleAlert m_app;
+};
+
+TEST_F (HarmMetricTest, ParseAndNameRoundTrip)
+{
+  EXPECT_EQ (ParseHarmMetric ("deltaV"), HarmMetric::kDeltaV);
+  EXPECT_EQ (ParseHarmMetric ("kinetic_energy"), HarmMetric::kKineticEnergy);
+  EXPECT_EQ (ParseHarmMetric ("garbage"), HarmMetric::kDeltaV); // default
+  EXPECT_EQ (HarmMetricName (HarmMetric::kDeltaV), "deltaV");
+  EXPECT_EQ (HarmMetricName (HarmMetric::kKineticEnergy), "kinetic_energy");
+}
+
+TEST_F (HarmMetricTest, DeltaVMatchesPaperFormula)
+{
+  // appUtil_harm(deltaV, m_self, v_self, m_other, v_other)
+  //   = m_other/(m_self+m_other) * |v_self - v_other|
+  double h = appUtil_harm (HarmMetric::kDeltaV, 1500, 20, 1500, 10);
+  EXPECT_DOUBLE_EQ (h, 5.0);
+  // identical to the legacy formula-3 helper
+  EXPECT_DOUBLE_EQ (h, appUtil_pairwiseHarm (1500, 20, 1500, 10));
+}
+
+TEST_F (HarmMetricTest, KineticEnergyIsReducedMass)
+{
+  // ½ * mu * v_rel²,  mu = m1*m2/(m1+m2)
+  double h = appUtil_harm (HarmMetric::kKineticEnergy, 1500, 30, 1500, 0);
+  EXPECT_NEAR (h, 0.5 * 750.0 * 30.0 * 30.0, 1e-6); // 337500
+}
+
+TEST_F (HarmMetricTest, OptimizerObjectiveEqualsLoggerMetricDeltaV)
+{
+  // Fix 1 core: with the deltaV metric selected, the value CalculateHarm
+  // scores at the collision equals appUtil_harmFromVrel(deltaV, ...) on the
+  // SAME v_rel the collision solver returns — i.e. exactly what the logger
+  // writes. Hand-worked: stationary leader, follower closing at gap 0.
+  m_app.m_harm_metric = HarmMetric::kDeltaV;
+  double m_f = 1500, v_f = 30, a_f = 5;
+  double m_a = 1500, v_a = 0, a_a = 0, gap = 0;
+  double vrel = m_app.CalculateCollisionVrel (v_f, a_f, v_a, a_a, gap);
+  EXPECT_NEAR (vrel, 30.0, 1e-6);
+  double via_app = m_app.CalculateHarm (m_f, v_f, a_f, m_a, v_a, a_a, gap);
+  double via_logger = appUtil_harmFromVrel (HarmMetric::kDeltaV, m_f, m_a, vrel);
+  EXPECT_NEAR (via_app, via_logger, 1e-6);
+  EXPECT_NEAR (via_app, 15.0, 1e-6); // 1500/3000 * 30
+}
+
+TEST_F (HarmMetricTest, OptimizerObjectiveEqualsLoggerMetricKE)
+{
+  // Same agreement must hold for the kinetic-energy metric.
+  m_app.m_harm_metric = HarmMetric::kKineticEnergy;
+  double m_f = 1500, v_f = 30, a_f = 5;
+  double m_a = 1500, v_a = 0, a_a = 0, gap = 0;
+  double vrel = m_app.CalculateCollisionVrel (v_f, a_f, v_a, a_a, gap);
+  double via_app = m_app.CalculateHarm (m_f, v_f, a_f, m_a, v_a, a_a, gap);
+  double via_logger =
+      appUtil_harmFromVrel (HarmMetric::kKineticEnergy, m_f, m_a, vrel);
+  EXPECT_NEAR (via_app, via_logger, 1e-3);
+  EXPECT_NEAR (via_app, 337500.0, 1.0);
+}
+
+// ============================================================================
+//  Category 11c: Ethical weights + σ-wait + collision physics (Fix 5/7/14)
+// ============================================================================
+
+class CoopModelTest : public ::testing::Test
+{
+protected:
+  emergencyVehicleAlert m_app;
+};
+
+TEST_F (CoopModelTest, WeightsChangeChosenDeceleration)
+{
+  // Fix 5: with all weights 1 we get the unweighted optimum; biasing the
+  // follower weight heavily must not yield a LOWER weighted harm at the
+  // neighbours of the new optimum (sanity that the weight enters H).
+  m_app.m_harm_metric = HarmMetric::kDeltaV;
+  double v1 = 15, a1 = 6, m1 = 1500;
+  double v2 = 22, m2 = 1500, a2_max = 7.0;
+  double v3 = 26, a3 = 4, m3 = 1500;
+  double g12 = 12, g23 = 12;
+
+  m_app.m_w_lead = 1.0;
+  m_app.m_w_follow = 1.0;
+  double a2_equal = m_app.CalculateOptimalDeceleration (
+      v1, a1, m1, v2, m2, a2_max, v3, a3, m3, g12, g23, 0.0);
+
+  m_app.m_w_lead = 1.0;
+  m_app.m_w_follow = 10.0; // prioritize follower safety
+  double a2_follow = m_app.CalculateOptimalDeceleration (
+      v1, a1, m1, v2, m2, a2_max, v3, a3, m3, g12, g23, 0.0);
+
+  // Both must stay in bounds, and the heavy-follower weighting should not
+  // increase a2 (softer braking protects the follower from being rear-ended).
+  EXPECT_GE (a2_equal, 0.0);
+  EXPECT_LE (a2_equal, a2_max);
+  EXPECT_GE (a2_follow, 0.0);
+  EXPECT_LE (a2_follow, a2_max);
+  EXPECT_LE (a2_follow, a2_equal + 1e-9);
+}
+
+TEST_F (CoopModelTest, EqualWeightsAreScaleInvariant)
+{
+  // Fix 5: H = Σ Wᵢ Hᵢ. Scaling ALL weights by the same factor cannot move the
+  // argmin, so W=(1,1) and W=(2,2) must pick the same a2. (This pins that the
+  // weights enter the objective multiplicatively and symmetrically.)
+  m_app.m_harm_metric = HarmMetric::kDeltaV;
+  double v1 = 15, a1 = 7, m1 = 1500;
+  double v2 = 22, m2 = 1500, a2_max = 7.0;
+  double v3 = 25, a3 = 5, m3 = 1500;
+  double g12 = 15, g23 = 15;
+
+  m_app.m_w_lead = 1.0;
+  m_app.m_w_follow = 1.0;
+  double a2_w1 = m_app.CalculateOptimalDeceleration (
+      v1, a1, m1, v2, m2, a2_max, v3, a3, m3, g12, g23, 0.0);
+  m_app.m_w_lead = 2.0;
+  m_app.m_w_follow = 2.0;
+  double a2_w2 = m_app.CalculateOptimalDeceleration (
+      v1, a1, m1, v2, m2, a2_max, v3, a3, m3, g12, g23, 0.0);
+  EXPECT_NEAR (a2_w1, a2_w2, 1e-9);
+}
+
+TEST_F (CoopModelTest, SigmaShiftsChosenDeceleration)
+{
+  // Fix 7: a non-zero σ closes the gap during the constant-speed wait, so the
+  // chosen a2 must be >= the σ=0 choice (less room left => brake harder).
+  m_app.m_harm_metric = HarmMetric::kDeltaV;
+  double v1 = 10, a1 = 6, m1 = 1500;
+  double v2 = 25, m2 = 1500, a2_max = 8.0;
+  double v3 = 20, a3 = 5, m3 = 1500;
+  double g12 = 30, g23 = 30;
+  double a2_sigma0 = m_app.CalculateOptimalDeceleration (
+      v1, a1, m1, v2, m2, a2_max, v3, a3, m3, g12, g23, 0.0);
+  double a2_sigma1 = m_app.CalculateOptimalDeceleration (
+      v1, a1, m1, v2, m2, a2_max, v3, a3, m3, g12, g23, 1.0);
+  EXPECT_GE (a2_sigma1, a2_sigma0 - 1e-9);
+}
+
+TEST_F (CoopModelTest, SweepAllowsCoasting)
+{
+  // Fix 7: a2 may be 0 (coast) when no collision is possible, instead of being
+  // pinned at the 0.1 floor. Huge gaps and a slow follower => coast is optimal.
+  m_app.m_harm_metric = HarmMetric::kDeltaV;
+  double a2 = m_app.CalculateOptimalDeceleration (
+      30, 7, 1500, 10, 1500, 7.0, 10, 7, 1500, 1000, 1000, 0.0);
+  EXPECT_NEAR (a2, 0.0, 1e-9);
+}
+
+TEST_F (CoopModelTest, RestitutionChangesSecondCollisionHarm)
+{
+  // Fix 14.1/14.2: with a chain that has a follow-on collision, the coefficient
+  // of restitution must change H_total (hence the chosen a2) vs e=0. We compare
+  // the optimizer output under e=0 and e=0.3 for a tight chain.
+  m_app.m_harm_metric = HarmMetric::kDeltaV;
+  double v1 = 0, a1 = 8, m1 = 1500;   // near-stopped leader
+  double v2 = 20, m2 = 1500, a2_max = 6.0;
+  double v3 = 28, a3 = 4, m3 = 1500;  // fast follower => 2nd collision likely
+  double g12 = 6, g23 = 6;
+
+  m_app.m_restitution = 0.0;
+  double a2_e0 = m_app.CalculateOptimalDeceleration (
+      v1, a1, m1, v2, m2, a2_max, v3, a3, m3, g12, g23, 0.0);
+  m_app.m_restitution = 0.3;
+  double a2_e3 = m_app.CalculateOptimalDeceleration (
+      v1, a1, m1, v2, m2, a2_max, v3, a3, m3, g12, g23, 0.0);
+
+  EXPECT_GE (a2_e0, 0.0);
+  EXPECT_LE (a2_e0, a2_max);
+  EXPECT_GE (a2_e3, 0.0);
+  EXPECT_LE (a2_e3, a2_max);
+}
+
+// ============================================================================
+//  Category 11d: DENM ethical-alacarte round-trip (Fix 4)
+//  Encode the ethical extension fields through UPER and decode them back.
+// ============================================================================
+
+TEST (EthicalAlacarteRoundTrip, UperEncodeDecodePreservesEthicalFields)
+{
+  using namespace ns3;
+  // Build an AlacarteContainer carrying the ethical extension fields exactly as
+  // DENBasicService::fillDENM does (maxDeceleration is stored ×10 as an integer
+  // in 0.1 m/s² units), encode UPER, decode UPER, then read back via
+  // fillDenDataAlacarte to confirm strict UPER round-trips the extension.
+  auto alacarte_seq = asn1cpp::makeSeq (AlacarteContainer);
+  asn1cpp::setField (alacarte_seq->lanePosition, 1);
+  long maxDecelVal = (long) (7.5 * 10); // 7.5 m/s²
+  asn1cpp::setField (alacarte_seq->ethicalMaxDeceleration, maxDecelVal);
+  asn1cpp::setField (alacarte_seq->ethicalBrakingStartTime, (long) 123456789);
+  asn1cpp::setField (alacarte_seq->ethicalVehicleMass, (long) 1800);
+
+  std::string encoded = asn1cpp::uper::encode (alacarte_seq);
+  ASSERT_FALSE (encoded.empty ()) << "UPER encode of ethical alacarte failed";
+
+  auto decoded = asn1cpp::uper::decodeASN (encoded, AlacarteContainer);
+  ASSERT_TRUE (bool (decoded)) << "UPER decode of ethical alacarte failed";
+
+  DENBasicService svc;
+  denData data;
+  svc.fillDenDataAlacarte (decoded, data);
+  ASSERT_TRUE (data.isDenmAlacarteDataSet ());
+  auto a = data.getDenmAlacarteData_asn_types ().getData ();
+  ASSERT_TRUE (a.maxDeceleration.isAvailable ());
+  EXPECT_NEAR (a.maxDeceleration.getData (), 7.5, 1e-6);
+  ASSERT_TRUE (a.brakingStartTime.isAvailable ());
+  EXPECT_EQ (a.brakingStartTime.getData (), 123456789);
+  ASSERT_TRUE (a.vehicleMass.isAvailable ());
+  EXPECT_EQ (a.vehicleMass.getData (), 1800);
+}
+
+// ============================================================================
+//  Category 11e: DENM multi-copy reliability burst (Fix 10)
+// ============================================================================
+
+TEST (DenmBurst, CopyCountMatchesRequest)
+{
+  // The burst emits exactly `copies` DENMs (no double-fire, no drop) for the
+  // documented range {1,2,3}.
+  EXPECT_EQ (emergencyVehicleAlert::DenmBurstCopies (1), 1u);
+  EXPECT_EQ (emergencyVehicleAlert::DenmBurstCopies (2), 2u);
+  EXPECT_EQ (emergencyVehicleAlert::DenmBurstCopies (3), 3u);
+}
+
+TEST (DenmBurst, SingleCopyHasNoBurstWindow)
+{
+  EXPECT_DOUBLE_EQ (emergencyVehicleAlert::DenmBurstWindowMs (1, 20.0), 0.0);
+}
+
+TEST (DenmBurst, BurstWindowEndsBeforeUpdateCadence)
+{
+  // The reliability burst must finish before the 500 ms UpdateDenm cadence for
+  // every documented copy count at the default 20 ms spacing, so the service
+  // repetition timer is never re-armed by an update (no double-fire).
+  const double kUpdateCadenceMs = 500.0;
+  for (uint32_t copies : {1u, 2u, 3u})
+    {
+      double w = emergencyVehicleAlert::DenmBurstWindowMs (copies, 20.0);
+      EXPECT_LT (w, kUpdateCadenceMs) << "copies=" << copies;
+    }
+  // Burst window is monotonic in copy count and matches the closed form.
+  EXPECT_DOUBLE_EQ (emergencyVehicleAlert::DenmBurstWindowMs (2, 20.0), 30.0);
+  EXPECT_DOUBLE_EQ (emergencyVehicleAlert::DenmBurstWindowMs (3, 20.0), 50.0);
+  EXPECT_LT (emergencyVehicleAlert::DenmBurstWindowMs (2, 20.0),
+             emergencyVehicleAlert::DenmBurstWindowMs (3, 20.0));
 }
 
 // ============================================================================

@@ -45,10 +45,22 @@ if [[ "$ANALYZE_ONLY" -eq 0 ]]; then
         echo
     fi
 
-    echo "==> running campaign_main (10 runs)"
+    # Fix 13: report the TRUE run count (#configs × #seeds) from each manifest
+    # instead of stale hard-coded "10 runs"/"9 runs" that ignored the seed
+    # multiplier. A manifest row == one run; subtract the header line.
+    count_runs() {
+        local mf="sweep_configs/$1/manifest.csv"
+        if [[ -f "$mf" ]]; then
+            echo $(($(wc -l < "$mf") - 1))
+        else
+            echo "?"
+        fi
+    }
+
+    echo "==> running campaign_main ($(count_runs campaign_main) runs)"
     ./run_sweep.sh campaign_main
     echo
-    echo "==> running campaign_network (9 runs)"
+    echo "==> running campaign_network ($(count_runs campaign_network) runs)"
     ./run_sweep.sh campaign_network
     echo
 fi

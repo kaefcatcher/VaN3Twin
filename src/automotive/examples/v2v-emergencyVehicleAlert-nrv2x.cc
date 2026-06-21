@@ -140,13 +140,23 @@ main (int argc, char *argv[])
   std::string harmLogFile = "harm_log.csv";
   double harmLogPeriodS = 0.1;
   double harmLogRadiusM = 150.0;
+  // Fix 1: canonical harm metric, must match the app's HarmMetric attribute.
+  std::string harmMetric = "deltaV";        // "deltaV" | "kinetic_energy"
+  // Fix 3: same-direction tolerance for the collision-aware harm gate.
+  double harmGateHeadingDeg = 30.0;
 
-  // Forced emergency brake of a designated vehicle, used to guarantee a
-  // hard-brake event in scenarios where SUMO's planned <stop> would
-  // otherwise decelerate too smoothly to fire the HardBrakeThreshold gate.
+  // Forced emergency brake of the HAZARD ORIGINATOR only (Fix 2). Used to
+  // guarantee a hard-brake event in scenarios where SUMO's planned <stop>
+  // would otherwise decelerate too smoothly to fire the HardBrakeThreshold.
   // forceBrakeTime <= 0 disables the feature.
+  //
+  // Fix 2/13: the brake is applied to the FIRST forceBrakeCount vehicles named
+  // in forceBrakeVehicles (default: just the originator veh0). The followers
+  // are left entirely to the cooperative algorithm — no setMaxSpeed, no second
+  // slowDown — so the no-algo and algo arms differ ONLY by cooperative_detection.
   double forceBrakeTime = 15.0;            // seconds of simulation time
-  std::string forceBrakeVehicles = "veh0";   // SUMO vehicle id to brake
+  std::string forceBrakeVehicles = "veh0";   // candidate SUMO ids (comma-separated)
+  uint32_t forceBrakeCount = 1;             // brake only the first N candidates (originator)
   double forceBrakeDuration = 1.0;          // seconds to reach speed 0
   double forceBrakeTargetSpeed = 0.0;       // m/s
   double forceBrakePosition = 2500.0;
@@ -164,6 +174,16 @@ main (int argc, char *argv[])
   // Fraction of max_decel that V3 applies in the chain / rear cooperative
   // branch. 1.0 = paper-strict; reduce to keep V3 from out-braking V2.
   double chainBrakeFraction = 1.0;
+
+  // Fix 5: ethical priority weights W_i for H = Σ Wᵢ Hᵢ (1.0 = unweighted).
+  double ethicalWeightLead = 1.0;
+  double ethicalWeightFollow = 1.0;
+  // Fix 14: collision physics + link-quality σ knobs.
+  double restitution = 0.0;             // coefficient of restitution e ∈ [0,1]
+  double linkPacketErrorRate = 0.1;     // p for SigmaMode="linkquality"
+  double linkSigmaGain = 1.0;           // gain on the link-quality σ stretch
+  bool denmMrcCombining = false;        // scoped knob (not yet modeled)
+  bool heterogeneousTraffic = false;    // scoped knob (not yet modeled)
 
   xmlDocPtr rou_xml_file;
   double m_baseline_prr = config.value("m_baseline_prr", 150.0);
@@ -251,6 +271,8 @@ main (int argc, char *argv[])
     harmLogFile       = config.value("harm_log_file", harmLogFile);
     harmLogPeriodS    = config.value("harm_log_period_s", harmLogPeriodS);
     harmLogRadiusM    = config.value("harm_log_radius_m", harmLogRadiusM);
+    harmMetric        = config.value("harm_metric", harmMetric);
+    harmGateHeadingDeg= config.value("harm_gate_heading_deg", harmGateHeadingDeg);
 
     cbrWindowMs       = config.value("cbr_window_ms", cbrWindowMs);
     cbrAlpha          = config.value("cbr_alpha", cbrAlpha);
@@ -260,6 +282,7 @@ main (int argc, char *argv[])
 
     forceBrakeTime         = config.value("force_brake_time", forceBrakeTime);
     forceBrakeVehicles      = config.value("force_brake_vehicles", forceBrakeVehicles);
+    forceBrakeCount        = config.value("force_brake_count", forceBrakeCount);
     forceBrakeDuration     = config.value("force_brake_duration", forceBrakeDuration);
     forceBrakeTargetSpeed  = config.value("force_brake_target_speed", forceBrakeTargetSpeed);
     forceBrakePosition     = config.value("force_brake_position", forceBrakePosition);
@@ -269,6 +292,13 @@ main (int argc, char *argv[])
     wasMovingSpeed         = config.value("was_moving_speed", wasMovingSpeed);
     includeEthicalAlacarte = config.value("include_ethical_alacarte", includeEthicalAlacarte);
     chainBrakeFraction     = config.value("chain_brake_fraction", chainBrakeFraction);
+    ethicalWeightLead      = config.value("ethical_weight_lead", ethicalWeightLead);
+    ethicalWeightFollow    = config.value("ethical_weight_follow", ethicalWeightFollow);
+    restitution            = config.value("restitution", restitution);
+    linkPacketErrorRate    = config.value("link_packet_error_rate", linkPacketErrorRate);
+    linkSigmaGain          = config.value("link_sigma_gain", linkSigmaGain);
+    denmMrcCombining       = config.value("denm_mrc_combining", denmMrcCombining);
+    heterogeneousTraffic   = config.value("heterogeneous_traffic", heterogeneousTraffic);
 
     NS_LOG_INFO("Configuration loaded from JSON");
   }
@@ -277,16 +307,22 @@ main (int argc, char *argv[])
     NS_FATAL_ERROR("Error parsing config.json: " << e.what());
   }
 
+  // Fix 2/13: force-brake only the hazard ORIGINATOR(s). Parse the candidate
+  // list, then keep at most forceBrakeCount of them (the first inserted
+  // vehicles = the lead platoon). The remaining followers are controlled
+  // solely by the cooperative algorithm, so no-algo vs algo differ ONLY by
+  // cooperative_detection. force_brake_count=0 disables the forced brake.
   std::vector<std::string> brakeVehicles;
-  std::stringstream ss(forceBrakeVehicles);
-  std::string veh;
-
-  while (std::getline(ss, veh, ','))
   {
+    std::stringstream ss(forceBrakeVehicles);
+    std::string veh;
+    while (std::getline(ss, veh, ','))
+    {
       if (!veh.empty())
-      {
-          brakeVehicles.push_back(veh);
-      }
+        brakeVehicles.push_back(veh);
+    }
+    if (brakeVehicles.size() > forceBrakeCount)
+      brakeVehicles.resize(forceBrakeCount);
   }
 
   /*
@@ -318,9 +354,11 @@ main (int argc, char *argv[])
   cmd.AddValue ("harm-log-period-s", "Sampling period (s) of the HARM log", harmLogPeriodS);
   cmd.AddValue ("harm-log-radius-m", "Pairing radius (m) for the HARM log", harmLogRadiusM);
   cmd.AddValue ("force-brake-time", "Simulation time (s) at which to force a TraCI brake. <= 0 disables.", forceBrakeTime);
-  cmd.AddValue ("force-brake-vehicle", "SUMO vehicle id to brake", forceBrakeVehicles);
+  cmd.AddValue ("force-brake-vehicle", "Candidate SUMO vehicle ids to brake (comma-separated)", forceBrakeVehicles);
+  cmd.AddValue ("force-brake-count", "Brake only the first N candidate vehicles (the hazard originator). 0 disables.", forceBrakeCount);
   cmd.AddValue ("force-brake-duration", "Duration (s) over which the forced brake completes", forceBrakeDuration);
   cmd.AddValue ("force-brake-target-speed", "Target speed (m/s) of the forced brake (0 = full stop)", forceBrakeTargetSpeed);
+  cmd.AddValue ("harm-metric", "Canonical harm metric: 'deltaV' (formula 3) or 'kinetic_energy'", harmMetric);
   cmd.AddValue ("speed-drop-threshold", "Speed drop (m/s) within 1 s that triggers slowVehicle DENM", speedDropThreshold);
   cmd.AddValue ("stationary-speed", "Speed (m/s) below which vehicle is considered stopped", stationarySpeed);
   cmd.AddValue ("was-moving-speed", "Speed (m/s) the vehicle must have exceeded before stationary fires", wasMovingSpeed);
@@ -892,6 +930,14 @@ main (int argc, char *argv[])
   EmergencyVehicleAlertHelper.SetAttribute ("WasMovingSpeed", DoubleValue (wasMovingSpeed));
   EmergencyVehicleAlertHelper.SetAttribute ("IncludeEthicalAlacarte", BooleanValue (includeEthicalAlacarte));
   EmergencyVehicleAlertHelper.SetAttribute ("ChainBrakeFraction", DoubleValue (chainBrakeFraction));
+  EmergencyVehicleAlertHelper.SetAttribute ("HarmMetric", StringValue (harmMetric));
+  EmergencyVehicleAlertHelper.SetAttribute ("EthicalWeightLead", DoubleValue (ethicalWeightLead));
+  EmergencyVehicleAlertHelper.SetAttribute ("EthicalWeightFollow", DoubleValue (ethicalWeightFollow));
+  EmergencyVehicleAlertHelper.SetAttribute ("Restitution", DoubleValue (restitution));
+  EmergencyVehicleAlertHelper.SetAttribute ("LinkPacketErrorRate", DoubleValue (linkPacketErrorRate));
+  EmergencyVehicleAlertHelper.SetAttribute ("LinkSigmaGain", DoubleValue (linkSigmaGain));
+  EmergencyVehicleAlertHelper.SetAttribute ("DENMMrcCombining", BooleanValue (denmMrcCombining));
+  EmergencyVehicleAlertHelper.SetAttribute ("HeterogeneousTraffic", BooleanValue (heterogeneousTraffic));
 
   /* callback function for node creation */
   int i=0;
@@ -938,8 +984,12 @@ main (int argc, char *argv[])
   /* Time-sampled pairwise HARM log over SUMO ground truth. Independent of
    * the V2X stack, so it isolates the algorithm's effect from PRR / loss.
    */
+  // Fix 1/3/5: the ground-truth logger uses the same canonical harm metric as
+  // the optimizer, gates pairs on same-direction + closing geometry, and reads
+  // per-vehicle mass from SUMO.
   Ptr<HarmLogger> harmLogger =
-      Create<HarmLogger> (sumoClient, harmLogFile, harmLogPeriodS, harmLogRadiusM);
+      Create<HarmLogger> (sumoClient, harmLogFile, harmLogPeriodS, harmLogRadiusM,
+                          ParseHarmMetric (harmMetric), 1500.0, harmGateHeadingDeg);
   harmLogger->Start ();
 
   /* Forced emergency brake. SUMO's planned <stop> tends to use a smooth
@@ -973,18 +1023,18 @@ main (int argc, char *argv[])
               {
                   NS_LOG_UNCOND(
                       "[" << Simulator::Now().GetSeconds()
-                      << "s] FORCED BRAKE at "
+                      << "s] FORCED BRAKE (originator) at "
                       << pos << " m: "
                       << v);
 
+                  // Fix 2: a single slowDown on the ORIGINATOR only — no
+                  // setMaxSpeed pin, and nothing applied to followers. The
+                  // followers react solely through the cooperative algorithm,
+                  // so the no-algo / algo arms differ only by the algorithm.
                   sumoClient->TraCIAPI::vehicle.slowDown(
                       v,
                       forceBrakeTargetSpeed,
                       forceBrakeDuration);
-
-                  sumoClient->TraCIAPI::vehicle.setMaxSpeed(
-                      v,
-                      std::max(forceBrakeTargetSpeed, 0.001));
 
                   brakedVehicles.insert(v);
               }

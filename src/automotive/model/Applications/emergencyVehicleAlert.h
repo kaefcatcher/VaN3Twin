@@ -19,6 +19,7 @@
 #include "ns3/sumo-sensor.h"
 #include "ns3/LDM.h"
 #include "ns3/traci-client.h"
+#include "ns3/harm-util.h"
 namespace ns3 {
 
 class emergencyVehicleAlert : public Application
@@ -115,6 +116,16 @@ private:
   Ptr<Socket> m_socket; //!< Socket TX/RX for everything
   std::string m_model; //!< Communication Model (possible values: 80211p and cv2x)
 
+  /* Fix 10: DENM reliability-burst geometry. Given a copy count (>=1) and the
+     inter-copy spacing [ms], returns:
+       - number of DENMs the repetition mechanism emits (== copies), and
+       - the burst end time [ms] after the trigger.
+     The burst window MUST stay below the 500 ms UpdateDenm cadence so the
+     service repetition never overlaps the periodic update (no double-fire).
+     Static + pure so it is unit-testable without a Simulator. */
+  static uint32_t DenmBurstCopies (uint32_t copies);
+  static double DenmBurstWindowMs (uint32_t copies, double spacingMs);
+
   void UpdateDenm (DEN_ActionID actionid);
   void TriggerDenm (long causeCode, long subCauseCode);
   void TerminateDenm ();
@@ -138,7 +149,18 @@ private:
   double CalculateOptimalDeceleration (double v1, double a1, double m1,
                                        double v2, double m2, double a2_max,
                                        double v3, double a3, double m3,
-                                       double gap12, double gap23);
+                                       double gap12, double gap23,
+                                       double sigma = 0.0);
+  /* Fix 14.1/14.2: relative speed of the (follower, ahead) pair at the
+     collision instant (0 if they never collide). CalculateHarm scores the
+     canonical metric on this; the chain-collision logic reuses it to build
+     post-impact velocities. */
+  double CalculateCollisionVrel (double v_follower, double a_follower,
+                                 double v_ahead, double a_ahead, double gap);
+  /* Fix 5: per-vehicle mass for a SUMO vehicle id, read from the vType
+     (TraCI getMass / a "mass" vType param). Falls back to m_vehicle_mass
+     when TraCI has no value, so equal-mass scenarios match prior behavior. */
+  double GetVehicleMass (const std::string &vehicleId);
   void LogCooperativeDecision (const std::string &role, long causeCode,
                                unsigned long senderStationId, double harm12,
                                double harm23, double harmTotal,
@@ -217,9 +239,41 @@ private:
   bool m_speed_window_full = false;
   bool m_has_been_moving = false;
   bool m_stationary_already_reported = false;
-  std::string m_sigma_mode;          // "computed" | "fixed" | "scaled"
+  std::string m_sigma_mode;          // "computed" | "fixed" | "scaled" | "linkquality"
   double m_fixed_sigma;              // seconds (fixed) or multiplier (scaled)
   double m_chain_brake_fraction;     // fraction of max_decel applied in V3 chain/rear branch
+
+  /* Fix 1: canonical harm metric. The optimizer minimizes EXACTLY what the
+     HarmLogger / figures report. m_harm_metric_name is the config string
+     ("deltaV" default, or "kinetic_energy"); m_harm_metric is its parsed
+     enum, resolved once in StartApplication. */
+  std::string m_harm_metric_name;
+  HarmMetric m_harm_metric = HarmMetric::kDeltaV;
+
+  /* Fix 5: ethical priority weights W_i applied in CalculateOptimalDeceleration
+     (H = Σ Wᵢ Hᵢ). m_w_lead weights H_{2,1} (harm to the middle vehicle from
+     the leader collision), m_w_follow weights H_{3,2} (harm to the follower).
+     All-ones reproduces the original unweighted sum. */
+  double m_w_lead = 1.0;
+  double m_w_follow = 1.0;
+
+  /* Fix 14.1/14.2: coefficient of restitution e ∈ [0,1] used for
+     post-collision velocities and the chain's second collision in H_total.
+     0 = perfectly inelastic (default, conservative); higher = more bounce. */
+  double m_restitution = 0.0;
+
+  /* Fix 14.3: link-quality σ mode parameters. When SigmaMode="linkquality",
+     σ is scaled by an estimated packet-error proxy so a worse channel buys a
+     longer decision budget (Ethical-V2X §V). m_link_per is the assumed
+     packet-error rate in [0,1]; m_link_sigma_gain scales its effect. */
+  double m_link_per = 0.1;
+  double m_link_sigma_gain = 1.0;
+
+  /* Fix 14.4/14.5 (scoped extensions, knobs only — see attribute docs):
+     MRC/diversity-combining and heterogeneous/opposite-direction traffic are
+     not yet modeled; these flags expose the intent and gate future work. */
+  bool m_denm_mrc_combining = false;   // TODO: model diversity combining of DENM copies
+  bool m_heterogeneous_traffic = false; // TODO: cross / oncoming traffic role logic
 
   /* Cooperative braking state */
   CooperativeBrakingState m_coopBraking;

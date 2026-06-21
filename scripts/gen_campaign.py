@@ -15,11 +15,19 @@ that drives both the SUMO mobility RNG and the ns-3 radio RNG), so the analyzer 
 box plots / error bars across seeds. ``config_id`` is the seed-independent key the analyzer
 groups by; ``label`` = ``<config_id>_s<seed>``.
 
-"algo" = cooperative_detection=True (sigma_mode=computed); "no-algo" = cooperative_detection=False.
+"algo" = cooperative_detection=True (sigma_mode=computed, include_ethical_alacarte=True so the
+leader's mass/decel actually ride the DENM — Fix 4); "no-algo" = cooperative_detection=False.
 
-Brake policy: the example's force brake is POSITION based (``force_brake_time`` is ignored),
-so each map gets a reachable ``force_brake_position`` and brakes veh0..veh9 to a stop — the
-cooperative algorithm only acts on a hard-brake DENM, so every scenario needs a firing hazard.
+Brake policy (Fix 2/13): the example's force brake is POSITION based (``force_brake_time`` is
+ignored), so each map gets a reachable ``force_brake_position``. Only the hazard ORIGINATOR is
+force-braked: ``force_brake_count`` selects how many of the candidate ``force_brake_vehicles`` to
+brake (default 1 = veh0). All followers are controlled by the cooperative algorithm alone, so the
+no-algo and algo arms differ ONLY by ``cooperative_detection``.
+
+Single source of truth (Fix 11): each scenario carries its own ``order``/``label``/``cbr_level``/
+``axis`` here, and the generator writes them into ``manifest.csv``. ``campaign_analyze.py`` reads
+the manifest — it never re-declares the scenario list. Add a scenario by adding a ``SCENARIOS``
+entry (+ its SUMO files); no analyzer edit is needed.
 """
 
 from __future__ import annotations
@@ -69,16 +77,25 @@ BASE = {
     "cooperative_detection": False,
     "sigma_mode": "computed",
     "fixed_sigma": 0.5,
-    "include_ethical_alacarte": False,
+    "include_ethical_alacarte": False,    # turned on per-arm for algo runs (Fix 4)
     "chain_brake_fraction": 1.0,
+    # Fix 5/14 model knobs (defaults reproduce prior unweighted, inelastic behavior).
+    "ethical_weight_lead": 1.0,
+    "ethical_weight_follow": 1.0,
+    "restitution": 0.0,
+    "link_packet_error_rate": 0.1,
+    "link_sigma_gain": 1.0,
     "force_brake_time": -1,
     "force_brake_position": 50.0,
+    # Candidate platoon; force_brake_count picks how many to actually brake (Fix 2/13).
     "force_brake_vehicles": "veh0,veh1,veh2,veh3,veh4,veh5,veh6,veh7,veh8,veh9",
+    "force_brake_count": 1,
     "force_brake_duration": 1.0,
     "force_brake_target_speed": 0.0,
     "harm_log_file": "harm_log.csv",
     "harm_log_period_s": 0.1,
     "harm_log_radius_m": 150.0,
+    "harm_metric": "deltaV",              # Fix 1: optimizer + logger share this metric
     "csv_log": "run",
     "speed_drop_threshold": 3.0,
     "stationary_speed": 1.0,
@@ -87,7 +104,11 @@ BASE = {
     "seed": SEEDS[0],
 }
 
-# scenario family -> SUMO map fields + scenario-specific brake/sim overrides
+# Scenario registry — the SINGLE source of truth (Fix 11). Each entry carries
+# its SUMO map fields PLUS the presentation metadata the analyzer used to
+# hard-code: `order` (x-axis position), `label` (short axis label), `cbr_level`
+# (drives fig4's CBR sweep — non-"na" => part of a CBR family), and `axis`
+# (the figure family it belongs to). All of these are emitted into manifest.csv.
 SCENARIOS = {
     "basic": {
         "sumo_folder": f"{EX}/sumo_files_v2v_cooperative/",
@@ -96,6 +117,9 @@ SCENARIOS = {
         "simTime": 22.5,
         "force_brake_position": 50.0,
         "cbr_level": "na",
+        "order": 0,
+        "label": "basic",
+        "axis": "scenario",
     },
     "highway_low": {
         "sumo_folder": f"{EX}/highway/",
@@ -104,6 +128,9 @@ SCENARIOS = {
         "simTime": HIGHWAY_SIM_TIME,
         "force_brake_position": HIGHWAY_BRAKE_POS,
         "cbr_level": "low",
+        "order": 1,
+        "label": "hw-low",
+        "axis": "cbr_sweep",
     },
     "highway_mid": {
         "sumo_folder": f"{EX}/highway/",
@@ -112,6 +139,9 @@ SCENARIOS = {
         "simTime": HIGHWAY_SIM_TIME,
         "force_brake_position": HIGHWAY_BRAKE_POS,
         "cbr_level": "mid",
+        "order": 2,
+        "label": "hw-mid",
+        "axis": "cbr_sweep",
     },
     "highway_high": {
         "sumo_folder": f"{EX}/highway/",
@@ -120,9 +150,32 @@ SCENARIOS = {
         "simTime": HIGHWAY_SIM_TIME,
         "force_brake_position": HIGHWAY_BRAKE_POS,
         "cbr_level": "high",
+        "order": 3,
+        "label": "hw-high",
+        "axis": "cbr_sweep",
+    },
+    # Fix 13: minimal template scenario that fires the algorithm ORGANICALLY
+    # (no forced brake). The cooperative platoon SUMO route already contains a
+    # planned <stop>, so DetectHardBraking / SpeedDrop / Stationary fire on
+    # their own — force_brake_count=0 disables the hack. Copy this entry + add
+    # SUMO files to add your own organic scenario; the analyzer needs no edit.
+    "organic_basic": {
+        "sumo_folder": f"{EX}/sumo_files_v2v_cooperative/",
+        "mob_trace": "cooperative.rou.xml",
+        "sumo_config": f"{EX}/sumo_files_v2v_cooperative/cooperative.sumo.cfg",
+        "simTime": 22.5,
+        "force_brake_count": 0,        # organic: no forced brake
+        "cbr_level": "na",
+        "order": 4,
+        "label": "organic",
+        "axis": "scenario",
     },
     # moscow_large (routes1000) removed: 1000 vehicles is too heavy for the campaign.
 }
+
+# Keys in a SCENARIOS entry that are presentation metadata (manifest only) and
+# must NOT be written into the runnable config.json.
+_SCENARIO_META_KEYS = {"cbr_level", "order", "label", "axis"}
 
 # Group-B network points (applied to highway_mid): label-stub -> (scheduling, pkeep, copies, overrides)
 NETWORK_POINTS = [
@@ -142,8 +195,12 @@ NETWORK_AXIS = {p[0]: ("denm_copies" if p[0].startswith("copies") else "sched_pk
 
 def _cfg(scenario: str, algo: bool, seed: int, **overrides) -> dict:
     cfg = dict(BASE)
-    cfg.update({k: v for k, v in SCENARIOS[scenario].items() if k != "cbr_level"})
+    cfg.update({k: v for k, v in SCENARIOS[scenario].items()
+                if k not in _SCENARIO_META_KEYS})
     cfg["cooperative_detection"] = bool(algo)
+    # Fix 4: algo runs must actually transmit the leader's mass/decel, so enable
+    # the ethical alacarte extension (it round-trips through DENM encode/decode).
+    cfg["include_ethical_alacarte"] = bool(algo)
     cfg["seed"] = seed
     cfg.update(overrides)
     return cfg
@@ -156,8 +213,11 @@ def _write(folder: str, label: str, cfg: dict) -> None:
 
 
 def _manifest(folder: str, rows: list[dict]) -> None:
-    fields = ["label", "config_id", "scenario", "cbr_level", "algo", "scheduling",
-              "pkeep", "denm_copies", "seed", "group", "axis"]
+    # Fix 11: scenario_order / scenario_label travel with the manifest so the
+    # analyzer derives the x-axis order and labels instead of re-declaring them.
+    fields = ["label", "config_id", "scenario", "scenario_label", "scenario_order",
+              "cbr_level", "algo", "scheduling", "pkeep", "denm_copies", "seed",
+              "group", "axis"]
     with open(os.path.join(folder, "manifest.csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
@@ -169,6 +229,7 @@ def gen_main() -> list[dict]:
     os.makedirs(folder, exist_ok=True)
     rows = []
     for scenario in SCENARIOS:
+        meta = SCENARIOS[scenario]
         for algo in (False, True):
             config_id = f"{scenario}_{'algo' if algo else 'noalgo'}"
             for seed in SEEDS:
@@ -176,9 +237,11 @@ def gen_main() -> list[dict]:
                 _write(folder, label, _cfg(scenario, algo, seed))
                 rows.append({
                     "label": label, "config_id": config_id, "scenario": scenario,
-                    "cbr_level": SCENARIOS[scenario]["cbr_level"], "algo": int(algo),
+                    "scenario_label": meta.get("label", scenario),
+                    "scenario_order": meta.get("order", 0),
+                    "cbr_level": meta["cbr_level"], "algo": int(algo),
                     "scheduling": "sps", "pkeep": 0.0, "denm_copies": 1, "seed": seed,
-                    "group": "main", "axis": "scenario",
+                    "group": "main", "axis": meta.get("axis", "scenario"),
                 })
     _manifest(folder, rows)
     return rows
@@ -197,6 +260,8 @@ def gen_network() -> list[dict]:
                 _write(folder, label, _cfg("highway_mid", algo, seed, **ov))
                 rows.append({
                     "label": label, "config_id": config_id, "scenario": "highway_mid",
+                    "scenario_label": SCENARIOS["highway_mid"].get("label", "hw-mid"),
+                    "scenario_order": SCENARIOS["highway_mid"].get("order", 0),
                     "cbr_level": "mid", "algo": int(algo), "scheduling": sched,
                     "pkeep": pk, "denm_copies": copies, "seed": seed,
                     "group": "network", "axis": NETWORK_AXIS[stub],

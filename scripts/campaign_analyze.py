@@ -38,13 +38,42 @@ from analyze import (  # scripts/ is sys.path[0] when run as a script
     trapezoid,
 )
 
-SCENARIO_ORDER = ["basic", "highway_low", "highway_mid", "highway_high"]
-SCENARIO_LABEL = {"basic": "basic", "highway_low": "hw-low", "highway_mid": "hw-mid",
-                  "highway_high": "hw-high"}
 ALGO_COLOR = {0: "#9e9e9e", 1: "#1f77b4"}   # no-algo grey, algo blue
 ALGO_NAME = {0: "no-algo", 1: "algo"}
 METRICS = ["prr", "denm_prr", "cam_prr", "cbr", "latency_ms",
            "harm_int", "harm_peak", "denm_tx", "msg_total", "msg_decoded"]
+
+
+# --------------------- scenario registry (Fix 11) ---------------------
+# The scenario order + labels are derived from the manifest the generator wrote,
+# never hard-coded here, so adding a scenario to gen_campaign.SCENARIOS flows
+# straight through to the figures with no analyzer edit.
+
+def scenario_order(groups_or_rows) -> list[str]:
+    """Distinct scenarios sorted by the manifest `scenario_order` field."""
+    items = groups_or_rows.values() if isinstance(groups_or_rows, dict) else groups_or_rows
+    order: dict[str, int] = {}
+    for it in items:
+        s = it.get("scenario")
+        if s is None:
+            continue
+        try:
+            o = int(it.get("scenario_order", 0))
+        except (TypeError, ValueError):
+            o = 0
+        order.setdefault(s, o)
+    return sorted(order, key=lambda s: (order[s], s))
+
+
+def scenario_label(groups_or_rows, scenario: str) -> str:
+    """Manifest `scenario_label` for a scenario (falls back to the id)."""
+    items = groups_or_rows.values() if isinstance(groups_or_rows, dict) else groups_or_rows
+    for it in items:
+        if it.get("scenario") == scenario:
+            lab = it.get("scenario_label")
+            if lab:
+                return lab
+    return scenario
 
 
 # ----------------------------- loading -----------------------------
@@ -149,6 +178,8 @@ def aggregate(rows: list[dict]) -> dict:
     for r in rows:
         g = groups.setdefault(r["config_id"], {
             "config_id": r["config_id"], "scenario": r["scenario"],
+            "scenario_label": r.get("scenario_label", r["scenario"]),
+            "scenario_order": r.get("scenario_order", 0),
             "cbr_level": r["cbr_level"], "algo": r["algo"], "scheduling": r["scheduling"],
             "pkeep": r["pkeep"], "denm_copies": r["denm_copies"], "axis": r["axis"],
             "group": r["group"], "runs": [], "vals": {m: [] for m in METRICS},
@@ -203,15 +234,17 @@ def _algo_legend(ax):
 
 
 def fig1_harm_by_scenario(groups, out, plt):
-    scen = [s for s in SCENARIO_ORDER if any(g["scenario"] == s for g in groups.values())]
+    scen = scenario_order(groups)
     fig, ax = plt.subplots(figsize=(10, 5.5))
     for i, s in enumerate(scen):
         for algo, off in ((0, -0.18), (1, 0.18)):
             _box(ax, gvals(groups, "harm_int", scenario=s, algo=algo),
                  i + off, ALGO_COLOR[algo])
     ax.set_xticks(range(len(scen)))
-    ax.set_xticklabels([SCENARIO_LABEL[s] for s in scen])
-    ax.set_ylabel("∫ Σ pairwise HARM dt")
+    ax.set_xticklabels([scenario_label(groups, s) for s in scen])
+    # Fix 1: axis labels the actual canonical metric. deltaV harm is in
+    # kg-normalized m/s, integrated over time.
+    ax.set_ylabel("∫ Σ pairwise HARM dt  [deltaV: kg-norm m/s · s]")
     ax.set_title("Cooperative-braking algorithm: integrated HARM by scenario "
                  "(box = spread over seeds)")
     ax.grid(True, axis="y", alpha=0.3)
@@ -221,7 +254,7 @@ def fig1_harm_by_scenario(groups, out, plt):
 
 
 def fig2_harm_reduction(groups, out, plt):
-    scen = [s for s in SCENARIO_ORDER if any(g["scenario"] == s for g in groups.values())]
+    scen = scenario_order(groups)
     fig, ax = plt.subplots(figsize=(10, 5.5))
     data, labels = [], []
     for s in scen:
@@ -233,7 +266,7 @@ def fig2_harm_reduction(groups, out, plt):
         red = [(no[k] - al[k]) / no[k] * 100.0 for k in sorted(set(no) & set(al))
                if no.get(k) and no[k] == no[k] and al.get(k) == al.get(k)]
         data.append(_clean(red))
-        labels.append(SCENARIO_LABEL[s])
+        labels.append(scenario_label(groups, s))
     bp = ax.boxplot([d if d else [0] for d in data], patch_artist=True,
                     showfliers=False, medianprops=dict(color="black"))
     for b in bp["boxes"]:
@@ -251,7 +284,7 @@ def fig2_harm_reduction(groups, out, plt):
 
 def fig3_network_metrics(groups, out, plt):
     import numpy as np
-    scen = [s for s in SCENARIO_ORDER if any(g["scenario"] == s for g in groups.values())]
+    scen = scenario_order(groups)
     x = np.arange(len(scen))
     w = 0.38
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
@@ -263,7 +296,7 @@ def fig3_network_metrics(groups, out, plt):
             ax.bar(x + off, means, w, yerr=errs, capsize=3,
                    label=ALGO_NAME[algo], color=ALGO_COLOR[algo])
         ax.set_xticks(x)
-        ax.set_xticklabels([SCENARIO_LABEL[s] for s in scen], rotation=30, ha="right")
+        ax.set_xticklabels([scenario_label(groups, s) for s in scen], rotation=30, ha="right")
         ax.set_title(title)
         ax.grid(True, axis="y", alpha=0.3)
     axes[0].set_ylabel("mean ± std over seeds")
@@ -274,7 +307,15 @@ def fig3_network_metrics(groups, out, plt):
 
 
 def fig4_harm_vs_cbr(groups, out, plt):
-    levels = ["highway_low", "highway_mid", "highway_high"]
+    # Fix 12: any CBR-swept family plots, not just highway_*. A scenario is part
+    # of the sweep if the manifest tagged it axis=="cbr_sweep" or gave it a
+    # non-"na" cbr_level.
+    levels = [s for s in scenario_order(groups)
+              if any(g["scenario"] == s and (g.get("axis") == "cbr_sweep"
+                                             or g.get("cbr_level") not in (None, "na", ""))
+                     for g in groups.values())]
+    if not levels:
+        return
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.8))
     for algo in (0, 1):
         pts = []
@@ -301,7 +342,8 @@ def fig4_harm_vs_cbr(groups, out, plt):
         ax.set_title(title)
         ax.grid(True, alpha=0.3)
         ax.legend()
-    fig.suptitle("Highway low/mid/high CBR sweep (mean ± std over seeds)")
+    fig.suptitle("CBR sweep: " + ", ".join(scenario_label(groups, s) for s in levels)
+                 + " (mean ± std over seeds)")
     _save(fig, out, "fig4_harm_vs_cbr")
     plt.close(fig)
 
@@ -337,6 +379,16 @@ def fig5_sched_pkeep(groups, out, plt):
     plt.close(fig)
 
 
+def warn_unplotted(rows, plotted_scenarios):
+    """Fix 12: never drop a scenario silently. Warn about any manifest scenario
+    that did not land in at least one figure."""
+    present = {r["scenario"] for r in rows if r.get("scenario")}
+    missing = sorted(present - set(plotted_scenarios))
+    for s in missing:
+        print(f"  WARNING: scenario '{s}' is in the manifest but appears in NO figure "
+              f"(check its 'axis'/'cbr_level' in gen_campaign.SCENARIOS)", file=sys.stderr)
+
+
 def fig6_denm_copies(groups, out, plt):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.8))
     for algo in (0, 1):
@@ -368,7 +420,7 @@ def fig6_denm_copies(groups, out, plt):
 
 
 def fig7_harm_timeseries(rows, out, plt):
-    scen = [s for s in SCENARIO_ORDER if any(r["scenario"] == s for r in rows)]
+    scen = scenario_order(rows)
     if not scen:
         return
     n = len(scen)
@@ -386,7 +438,7 @@ def fig7_harm_timeseries(rows, out, plt):
                 lab = ALGO_NAME[r["algo"]] if not seen[r["algo"]] else None
                 seen[r["algo"]] = True
                 ax.plot(ts, harm, color=ALGO_COLOR[r["algo"]], lw=0.8, alpha=0.5, label=lab)
-        ax.set_title(SCENARIO_LABEL[s])
+        ax.set_title(scenario_label(rows, s))
         ax.set_xlabel("t [s]")
         ax.grid(True, alpha=0.3)
     axes[0][0].set_ylabel("Σ pairwise HARM")
@@ -458,18 +510,33 @@ def main() -> int:
         print("matplotlib not available; wrote summary CSVs only", file=sys.stderr)
         return 0
 
+    # Track which scenarios actually land in a figure so none vanish silently.
+    plotted: set[str] = set()
     if main_groups:
         fig1_harm_by_scenario(main_groups, args.out, plt)
         fig2_harm_reduction(main_groups, args.out, plt)
         fig3_network_metrics(main_groups, args.out, plt)
         fig4_harm_vs_cbr(main_groups, args.out, plt)
         fig7_harm_timeseries(main_rows, args.out, plt)
+        # fig1/2/3/7 plot every main scenario; fig4 covers the CBR-swept subset.
+        plotted |= {g["scenario"] for g in main_groups.values()}
     if net_groups:
         fig5_sched_pkeep(net_groups, args.out, plt)
         fig6_denm_copies(net_groups, args.out, plt)
+        # fig5/6 only cover scenarios that appear on a sched_pkeep / denm_copies axis.
+        plotted |= {g["scenario"] for g in net_groups.values()
+                    if g["axis"] in ("sched_pkeep", "denm_copies")}
+
+    warn_unplotted(all_rows, plotted)
 
     if not args.no_heatmaps:
-        for s in ("highway_mid", "highway_high"):
+        # Fix 12: derive the heatmap scenarios from the manifest (the two
+        # densest CBR-swept scenarios) instead of hard-coded literals.
+        heat_scen = [s for s in scenario_order(main_groups)
+                     if any(g["scenario"] == s and (g.get("axis") == "cbr_sweep"
+                            or g.get("cbr_level") not in (None, "na", ""))
+                            for g in main_groups.values())][-2:]
+        for s in heat_scen:
             for algo in (0, 1):
                 hit = [g for g in main_groups.values()
                        if g["scenario"] == s and g["algo"] == algo]

@@ -17,15 +17,15 @@ two campaign groups via the existing `run_sweep.sh`, and (3) aggregates everythi
 > example** (CBR output, per-vehicle/per-message-type PRR, `SlFixedReselectionCounter`,
 > `denm_copies`) — build first and run the smoke test below.
 
-## What it runs (Structured / OFAT, multi-seed → 28 configs × seeds)
+## What it runs (Structured / OFAT, multi-seed → 26 configs × seeds)
 
 Every config is run once per **seed** in `SEEDS` (default `[1,2,3,4,5]` in
 `scripts/gen_campaign.py`) — each seed sets a distinct `seed` that drives **both** the SUMO
 mobility RNG and the ns-3 radio RNG, giving independent replications for box plots / error
-bars. With 5 seeds: **28 configs → 140 runs**. `SEEDS` is the runtime multiplier; drop to
+bars. With 5 seeds: **26 configs → 130 runs**. `SEEDS` is the runtime multiplier; drop to
 `[1,2,3]` for a faster first pass.
 
-**Group A — scenario study** (`sweep_configs/campaign_main/`, 10 configs × seeds) — each
+**Group A — scenario study** (`sweep_configs/campaign_main/`, 8 configs × seeds) — each
 scenario with the algorithm OFF (`cooperative_detection=false`) and ON (`true`,
 `sigma_mode=computed`), all at one baseline network point (SPS, pKeep 0, 1 DENM copy):
 
@@ -33,7 +33,8 @@ scenario with the algorithm OFF (`cooperative_detection=false`) and ON (`true`,
 |----------|-------------|
 | `basic` | `sumo_files_v2v_cooperative/cooperative.rou.xml` |
 | `highway_low/mid/high` | generated `highway/highway_{low,mid,high}.rou.xml` |
-| `moscow_large` | `moscow/routes1000.rou.xml` (both algo states — fixed: the old configs compared routes100 vs routes1000) |
+
+(`moscow_large` was removed — 1000 vehicles is too heavy for the campaign.)
 
 **Group B — network study** (`sweep_configs/campaign_network/`, 18 configs × seeds) —
 `highway_mid`, **both algo OFF and ON** (so the algorithm's benefit is measured under every
@@ -75,7 +76,7 @@ bars come from the multiple seeds; for more seeds (tighter boxes) bump `SEEDS` i
 3. **Brake must fire** for the algorithm to show a benefit (the cooperative algorithm only
    acts on a hard-brake DENM). The forced brake is **position based**
    (`force_brake_position`; `force_brake_time` is ignored by the example). Highway brakes the
-   lead platoon at 800 m with `simTime=40 s`; basic/moscow brake at 50 m. If HARM comes out
+   lead platoon at 800 m with `simTime=40 s`; basic brakes at 50 m. If HARM comes out
    identical with/without algo, the brake didn't fire — lower `force_brake_position` or raise
    `simTime` (knobs in `scripts/gen_campaign.py` / `gen_highway_density.py`).
 

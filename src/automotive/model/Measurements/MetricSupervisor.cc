@@ -23,6 +23,7 @@
 #include "MetricSupervisor.h"
 #include <sstream>
 #include <cfloat>
+#include <algorithm>
 
 #define DEG_2_RAD(val) ((val)*M_PI/180.0)
 
@@ -722,6 +723,20 @@ MetricSupervisor::checkCBR ()
         {
           currentBusyCBR[it.first] = it.second;
         }
+      // Re-seed every node so storeCBRNr keeps accumulating after this clear.
+      // storeCBRNr only adds busy time to keys ALREADY present in currentBusyCBR;
+      // without re-seeding, once the map is cleared here (and nextTimeToAddNr is
+      // empty, as it is before SL traffic starts at the bearer activation time)
+      // accumulation never resumes and the CBR stays 0 for the whole run.
+      for (uint32_t i = 0; i < m_node_container.GetN (); ++i)
+        {
+          std::string nid = std::to_string (m_node_container.Get (i)->GetId ());
+          if (currentBusyCBR.find (nid) == currentBusyCBR.end ())
+            {
+              currentBusyCBR[nid] = Time (0);
+            }
+          nodeDurationStateNr[nid] = Time (0);
+        }
     }
 
   lastCBRCheck = Simulator::Now();
@@ -804,7 +819,7 @@ MetricSupervisor::getCBRPerItem (std::string itemID)
 {
   if (m_average_cbr.find (itemID) != m_average_cbr.end ())
     {
-      return m_average_cbr[itemID].back();
+      return std::min (1.0, m_average_cbr[itemID].back());
     } else {
       return -1.0;
     }
@@ -820,10 +835,11 @@ float MetricSupervisor::getAverageCBROverall ()
         {
           continue;
         }
-      sum += it->second.back ();
+      sum += std::min (1.0f, static_cast<float> (it->second.back ()));
       count++;
     }
-  return sum / count;
+  // Guard the empty case (no CBR samples) so we report 0 rather than NaN.
+  return count > 0 ? sum / count : 0.0f;
 }
 
 

@@ -199,7 +199,24 @@ emergencyVehicleAlert::GetTypeId (void)
               "optimal_a2 (avoids the V2↔V3 transient closing-gap).",
               DoubleValue (1.0),
               MakeDoubleAccessor (&emergencyVehicleAlert::m_chain_brake_fraction),
-              MakeDoubleChecker<double> ());
+              MakeDoubleChecker<double> ())
+          .AddAttribute (
+              "DENMCopies",
+              "Number of copies of each triggered DENM to transmit (>=1). When >1, the DEN "
+              "basic service repeats the same encoded DENM (ETSI EN 302 637-3 T_Repetition) "
+              "every DENMCopySpacingMs over a short burst right after the trigger, to raise "
+              "the probability the emergency alert is delivered. 1 = single transmission.",
+              UintegerValue (1),
+              MakeUintegerAccessor (&emergencyVehicleAlert::m_denm_copies),
+              MakeUintegerChecker<uint32_t> (1))
+          .AddAttribute (
+              "DENMCopySpacingMs",
+              "Spacing in milliseconds between consecutive DENM copies when DENMCopies > 1. "
+              "Keep (DENMCopies-1) * DENMCopySpacingMs below the 500 ms DENM update cadence "
+              "so the reliability burst does not overlap the periodic update.",
+              DoubleValue (20.0),
+              MakeDoubleAccessor (&emergencyVehicleAlert::m_denm_copy_spacing_ms),
+              MakeDoubleChecker<double> (0.0));
   return tid;
 }
 
@@ -232,6 +249,8 @@ emergencyVehicleAlert::emergencyVehicleAlert ()
   m_include_ethical_alacarte = false;
   m_chain_brake_fraction = 1.0;
   m_send_denm = true;
+  m_denm_copies = 1;
+  m_denm_copy_spacing_ms = 20.0;
   m_sigma_mode = "computed";
   m_fixed_sigma = 0.5;
   m_speed_drop_threshold = 3.0;
@@ -1304,12 +1323,26 @@ emergencyVehicleAlert::TriggerDenm (long causeCode, long subCauseCode)
   // Set validity duration (30 seconds for safety events)
   data.setValidityDuration (30);
 
-  // Repetition is driven by the application's UpdateDenm scheduler. Leaving
-  // service-side repetition on (setDenmRepetition(duration, interval)) makes
-  // every interval fire twice — once from T_RepetitionStop in DENBasicService,
-  // once from appDENM_update inside UpdateDenm — because both rearm the same
-  // timer. Explicitly disable service-side repetition here.
-  data.setDenmRepetition (0, 0);
+  // DENM copies for reliability. When DENMCopies > 1 we use the DEN basic
+  // service's standard repetition mechanism (ETSI EN 302 637-3 T_Repetition):
+  // it re-sends the *same* encoded DENM every DENMCopySpacingMs for a short
+  // burst right after the trigger, raising the odds the alert is delivered.
+  //
+  // The burst window is sized to expire before the 500 ms UpdateDenm cadence,
+  // and UpdateDenm always passes setDenmRepetition(0,0), so the repetition timer
+  // is never re-armed by an update — avoiding the double-fire that would occur
+  // if both the service repetition and the app updater drove the same timer.
+  if (m_denm_copies > 1)
+    {
+      long interval = (long) m_denm_copy_spacing_ms;
+      long duration = (long) ((m_denm_copies - 1) * m_denm_copy_spacing_ms
+                              + m_denm_copy_spacing_ms / 2.0);
+      data.setDenmRepetition (duration, interval);
+    }
+  else
+    {
+      data.setDenmRepetition (0, 0);
+    }
 
   // Set situation container
   denData::denDataSituation situation;

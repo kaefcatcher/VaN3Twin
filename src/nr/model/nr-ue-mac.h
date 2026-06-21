@@ -1105,6 +1105,7 @@ private:
                                     */
   uint8_t m_reselCounter {0}; //!< The resource selection counter
   uint16_t m_cResel {0}; //!< The C_resel counter
+  uint8_t m_slFixedReselectionCounter {0}; //!< If non-zero, forces a fixed SL reselection counter (overrides the random Cresel of TS 38.214). 1 => dynamic per-Tx reselection.
 
   /**
    * Trace information regarding NR Sidelink PSCCH UE scheduling.

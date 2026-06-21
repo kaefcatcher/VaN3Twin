@@ -78,6 +78,15 @@ public:
   static std::string bufToString(uint8_t *buf, uint32_t bufsize);
 
   /**
+   * @brief Convert an ETSI message type enum to a short human-readable string
+   *        (e.g. messageType_cam -> "CAM"). Used when logging per-vehicle,
+   *        per-message-type statistics.
+   * @param messagetype  The ETSI type of the message.
+   * @return  The message type acronym, or "UNKNOWN" if unrecognised.
+   */
+  static std::string messageTypeToString(messageType_e messagetype);
+
+  /**
    * @brief Set the TraCI client pointer.
    * @param traci_ptr
    */
@@ -350,6 +359,50 @@ public:
   double getAverageNumberOfVehiclesInBaseline_messagetype(messageType_e messagetype) {return m_avg_nvehbsln_per_messagetype[messagetype];}
 
   /**
+   * @brief Get the average PRR for the messages of a given type sent by a specific vehicle.
+   * @param vehicleID    The ID of the (sender) vehicle.
+   * @param messagetype  The ETSI type of the message.
+   * @return  The average PRR for that (vehicle, message type) pair, or 0 if none recorded.
+   */
+  double getAveragePRR_vehicle_messagetype(uint64_t vehicleID, messageType_e messagetype) {return m_avg_PRR_per_veh_per_messagetype[vehicleID][messagetype];}
+  /**
+   * @brief Get the average latency for the messages of a given type sent by a specific vehicle.
+   * @param vehicleID    The ID of the (sender) vehicle.
+   * @param messagetype  The ETSI type of the message.
+   * @return  The average latency [ms] for that (vehicle, message type) pair.
+   */
+  double getAverageLatency_vehicle_messagetype(uint64_t vehicleID, messageType_e messagetype) {return m_avg_latency_ms_per_veh_per_messagetype[vehicleID][messagetype];}
+  /**
+   * @brief Get the number of packets of a given type transmitted by a specific vehicle.
+   * @param vehicleID    The ID of the (sender) vehicle.
+   * @param messagetype  The ETSI type of the message.
+   * @return  The number of transmitted packets for that (vehicle, message type) pair.
+   */
+  uint64_t getNumberTx_vehicle_messagetype(uint64_t vehicleID, messageType_e messagetype) {return m_ntx_per_veh_per_messagetype[vehicleID][messagetype];}
+  /**
+   * @brief Get the full per-vehicle, per-message-type average PRR table.
+   *
+   * Outer key: (sender) vehicle ID. Inner key: ETSI message type. Value: average PRR.
+   * Intended for end-of-simulation logging of statistics such as
+   * "veh1 CAM reception ratio, veh1 DENM reception ratio, ...".
+   * @return  A const reference to the per-vehicle, per-message-type PRR table.
+   */
+  const std::unordered_map<uint64_t, std::unordered_map<messageType_e, double>> &
+  getAveragePRR_per_vehicle_per_messagetype() const {return m_avg_PRR_per_veh_per_messagetype;}
+  /**
+   * @brief Get the full per-vehicle, per-message-type transmitted-packet-count table.
+   * @return  A const reference to the per-vehicle, per-message-type Tx-count table.
+   */
+  const std::unordered_map<uint64_t, std::unordered_map<messageType_e, uint64_t>> &
+  getNumberTx_per_vehicle_per_messagetype() const {return m_ntx_per_veh_per_messagetype;}
+  /**
+   * @brief Get the full per-vehicle, per-message-type average latency [ms] table.
+   * @return  A const reference to the per-vehicle, per-message-type latency table.
+   */
+  const std::unordered_map<uint64_t, std::unordered_map<messageType_e, double>> &
+  getAverageLatency_per_vehicle_per_messagetype() const {return m_avg_latency_ms_per_veh_per_messagetype;}
+
+  /**
    * @brief Get the total number of packets transmitted by a specific RSU.
    * @param rsuID  The ID of the RSU.
    * @return  The total number of packets transmitted by that specific RSU.
@@ -542,6 +595,14 @@ private:
   std::unordered_map<messageType_e,uint64_t> m_nrx_per_messagetype; //! key: message type, value: total number of packets received per message type
   std::unordered_map<messageType_e,uint64_t> m_count_nvehbsln_per_messagetype; //! key: message type, value: count for average number of vehicles within the baseline computation
   std::unordered_map<messageType_e,double> m_avg_nvehbsln_per_messagetype;  //! key: message type, value: average number of road users within the baseline used for the PRR computation for that message type
+
+  // Per-vehicle, per-message-type statistics (e.g. veh1 CAM reception ratio,
+  // veh1 DENM reception ratio). Outer key: (sender) vehicle ID. Inner key: message type.
+  std::unordered_map<uint64_t, std::unordered_map<messageType_e,double>> m_avg_PRR_per_veh_per_messagetype; //! avg PRR per (vehicle, message type)
+  std::unordered_map<uint64_t, std::unordered_map<messageType_e,int>> m_count_per_veh_per_messagetype; //! PRR sample count per (vehicle, message type)
+  std::unordered_map<uint64_t, std::unordered_map<messageType_e,uint64_t>> m_ntx_per_veh_per_messagetype; //! transmitted packets per (vehicle, message type)
+  std::unordered_map<uint64_t, std::unordered_map<messageType_e,double>> m_avg_latency_ms_per_veh_per_messagetype; //! avg latency [ms] per (vehicle, message type)
+  std::unordered_map<uint64_t, std::unordered_map<messageType_e,uint64_t>> m_count_latency_per_veh_per_messagetype; //! latency sample count per (vehicle, message type)
 
   std::unordered_map<uint64_t, std::vector<double>> m_sinr_per_veh; //! key: vehicle ID, value: SINR
   

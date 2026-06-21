@@ -80,6 +80,38 @@ MetricSupervisor::bufToString(uint8_t *buf, uint32_t bufsize)
   return bufss.str();
 }
 
+std::string
+MetricSupervisor::messageTypeToString(messageType_e messagetype)
+{
+  switch (messagetype)
+    {
+    case messageType_denm:            return "DENM";
+    case messageType_cam:             return "CAM";
+    case messageType_poi:             return "POI";
+    case messageType_spatem:          return "SPATEM";
+    case messageType_mapem:           return "MAPEM";
+    case messageType_ivim:            return "IVIM";
+    case messageType_ev_rsr:          return "EV-RSR";
+    case messageType_tistpgtransaction: return "TISTPG";
+    case messageType_srem:            return "SREM";
+    case messageType_ssem:            return "SSEM";
+    case messageType_evcsn:           return "EVCSN";
+    case messageType_saem:            return "SAEM";
+    case messageType_rtcmem:          return "RTCMEM";
+    case messageType_cpm:             return "CPM";
+    case messageType_imzm:            return "IMZM";
+    case messageType_vam:             return "VAM";
+    case messageType_dsm:             return "DSM";
+    case messageType_pcim:            return "PCIM";
+    case messageType_pcvm:            return "PCVM";
+    case messageType_mcm:             return "MCM";
+    case messageType_pam:             return "PAM";
+    case messageType_cem:             return "CEM";
+    case messageType_GNbeacon:        return "GNBEACON";
+    default:                          return "UNKNOWN";
+    }
+}
+
 void
 MetricSupervisor::signalSentPacket(std::string buf, double lat, double lon, uint64_t nodeID, messageType_e messagetype)
 {
@@ -198,6 +230,7 @@ MetricSupervisor::signalSentPacket(std::string buf, double lat, double lon, uint
 
   m_total_tx++;
   m_ntx_per_messagetype[messagetype]++;
+  m_ntx_per_veh_per_messagetype[nodeID][messagetype]++;
 }
 
 void
@@ -298,6 +331,12 @@ MetricSupervisor::signalReceivedPacket(std::string buf, uint64_t nodeID)
 
       m_count_latency_per_messagetype[messagetype]++;
       m_avg_latency_ms_per_messagetype[messagetype] += (curr_latency_ms - m_avg_latency_ms_per_messagetype[messagetype])/m_count_latency_per_messagetype[messagetype];
+
+      // Per-vehicle, per-message-type latency (keyed by the sender vehicle).
+      m_count_latency_per_veh_per_messagetype[senderID][messagetype]++;
+      m_avg_latency_ms_per_veh_per_messagetype[senderID][messagetype] +=
+          (curr_latency_ms - m_avg_latency_ms_per_veh_per_messagetype[senderID][messagetype])
+          / m_count_latency_per_veh_per_messagetype[senderID][messagetype];
 
       if(m_prr_verbose_stdout == true) {
           std::cout << "|Latency| ID: " << nodeID << " Current: " << curr_latency_ms << " - Average: " << m_avg_latency_ms << std::endl;
@@ -430,6 +469,13 @@ MetricSupervisor::computePRR(std::string buf)
 
       m_count_per_messagetype[messagetype]++;
       m_avg_PRR_per_messagetype[messagetype] += (PRR-m_avg_PRR_per_messagetype[messagetype])/m_count_per_messagetype[messagetype];
+
+      // Per-vehicle, per-message-type PRR (keyed by the sender vehicle), e.g.
+      // veh1 CAM reception ratio, veh1 DENM reception ratio, ...
+      m_count_per_veh_per_messagetype[senderID][messagetype]++;
+      m_avg_PRR_per_veh_per_messagetype[senderID][messagetype] +=
+          (PRR - m_avg_PRR_per_veh_per_messagetype[senderID][messagetype])
+          / m_count_per_veh_per_messagetype[senderID][messagetype];
 
       m_packetbuff_map.erase(buf);
       m_id_map.erase(buf);

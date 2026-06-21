@@ -44,6 +44,7 @@
 #include <vector>
 #include <sstream>
 #include <set>
+#include <algorithm>
 
 #include <unistd.h>
 #include "ns3/core-module.h"
@@ -132,6 +133,8 @@ main (int argc, char *argv[])
   double penetrationRate = 1.0;
   bool cooperativeDetection = true;
   bool sendDenm = true;
+  uint32_t denmCopies = 1;          // copies per triggered DENM (>=1); >1 enables a reliability burst
+  double denmCopySpacingMs = 20.0;  // spacing [ms] between consecutive DENM copies
   std::string sigmaMode = "computed";   // "computed" | "fixed" | "scaled"
   double fixedSigma = 0.5;              // seconds (fixed) or multiplier (scaled)
   std::string harmLogFile = "harm_log.csv";
@@ -196,6 +199,23 @@ main (int argc, char *argv[])
   uint16_t channelUpdatePeriod = 500; //ms
   uint8_t mcs = config.value("mcs", 14);
 
+  // Channel Busy Ratio (CBR) measurement knobs (see docs/nr_v2x_cbr_analysis.md).
+  double cbrWindowMs = config.value("cbr_window_ms", 100.0); // CBR measurement window [ms]
+  double cbrAlpha    = config.value("cbr_alpha", 0.5);       // EMA smoothing factor for CBR, in [0,1]
+  bool cbrEnabled    = config.value("cbr_enabled", true);    // measure + print CBR when the MetricSupervisor is on
+
+  // NR Mode-2 resource (re)selection counter. 0 keeps the standard random
+  // counter of TS 38.214; a value > 0 forces a fixed SL reselection counter,
+  // so reselection_counter = 1 yields fully dynamic (per-transmission) resource
+  // selection, while larger values emulate semi-persistent scheduling (SPS).
+  int reselCounter = config.value("reselection_counter", 0);
+
+  // Master RNG seed. Drives BOTH the SUMO mobility RNG (SumoSeed) and the ns-3
+  // radio RNG run (RngRun), so repeating a config under several seeds yields
+  // independent replications for confidence intervals / box plots. "sumo_seed"
+  // is accepted as a backward-compatible alias.
+  int seed = config.value("seed", config.value("sumo_seed", 10));
+
   // === JSON CONFIG PARSER ===
   try
   {
@@ -223,12 +243,20 @@ main (int argc, char *argv[])
     m_baseline_prr    = config.value("baseline", m_baseline_prr);
     m_metric_sup      = config.value("metric_supervisor", m_metric_sup);
     sendDenm          = config.value("send_denm", sendDenm);
+    denmCopies        = config.value("denm_copies", denmCopies);
+    denmCopySpacingMs = config.value("denm_copy_spacing_ms", denmCopySpacingMs);
     cooperativeDetection = config.value("cooperative_detection", cooperativeDetection);
     sigmaMode         = config.value("sigma_mode", sigmaMode);
     fixedSigma        = config.value("fixed_sigma", fixedSigma);
     harmLogFile       = config.value("harm_log_file", harmLogFile);
     harmLogPeriodS    = config.value("harm_log_period_s", harmLogPeriodS);
     harmLogRadiusM    = config.value("harm_log_radius_m", harmLogRadiusM);
+
+    cbrWindowMs       = config.value("cbr_window_ms", cbrWindowMs);
+    cbrAlpha          = config.value("cbr_alpha", cbrAlpha);
+    cbrEnabled        = config.value("cbr_enabled", cbrEnabled);
+    reselCounter      = config.value("reselection_counter", reselCounter);
+    seed              = config.value("seed", config.value("sumo_seed", seed));
 
     forceBrakeTime         = config.value("force_brake_time", forceBrakeTime);
     forceBrakeVehicles      = config.value("force_brake_vehicles", forceBrakeVehicles);
@@ -377,6 +405,12 @@ main (int argc, char *argv[])
   // Parse the command line
   cmd.Parse (argc, argv);
 
+  // Seed the ns-3 radio RNG run from the master seed (set before any RNG draws /
+  // AssignStreams). Combined with SumoSeed below, this makes each seed an
+  // independent replication of both mobility and the NR sidelink stochastics.
+  RngSeedManager::SetSeed (1);
+  RngSeedManager::SetRun (static_cast<uint64_t> (seed));
+
   if (verbose)
     {
       LogComponentEnable ("v2v-nrv2x", LOG_LEVEL_INFO);
@@ -524,6 +558,16 @@ main (int argc, char *argv[])
   nrHelper->SetUeMacAttribute ("NumSidelinkProcess", UintegerValue (4));
   nrHelper->SetUeMacAttribute ("EnableBlindReTx", BooleanValue (true));
   nrHelper->SetUeMacAttribute ("SlThresPsschRsrp", IntegerValue (slThresPsschRsrp));
+
+  // Force a fixed SL resource (re)selection counter when requested. 0 (default)
+  // leaves the standard random counter of TS 38.214; reselection_counter = 1
+  // gives dynamic per-transmission reselection, larger values approximate SPS.
+  if (reselCounter > 0)
+    {
+      uint16_t clamped = static_cast<uint16_t> (std::min (reselCounter, 255));
+      nrHelper->SetUeMacAttribute ("SlFixedReselectionCounter",
+                                   UintegerValue (clamped));
+    }
 
   uint8_t bwpIdForGbrMcptt = 0;
 
@@ -779,7 +823,7 @@ main (int argc, char *argv[])
   sumoClient->SetAttribute ("PenetrationRate", DoubleValue (penetrationRate));
   sumoClient->SetAttribute ("SumoLogFile", BooleanValue (false));
   sumoClient->SetAttribute ("SumoStepLog", BooleanValue (false));
-  sumoClient->SetAttribute ("SumoSeed", IntegerValue (10));
+  sumoClient->SetAttribute ("SumoSeed", IntegerValue (seed));
 
   std::string sumo_additional_options = "--verbose true";
 
@@ -807,6 +851,20 @@ main (int argc, char *argv[])
     {
       metSup = &prrSupObj;
       metSup->setTraCIClient(sumoClient);
+
+      /* Enable Channel Busy Ratio (CBR) measurement over the NR sidelink.
+       * The MetricSupervisor subscribes to each UE's ChannelOccupied trace and
+       * forms a per-node exponential-moving-average CBR over cbrWindowMs.
+       * See docs/nr_v2x_cbr_analysis.md for the analytical model. */
+      if (cbrEnabled)
+        {
+          metSup->setChannelTechnology ("Nr");
+          metSup->setCBRWindowValue (cbrWindowMs);
+          metSup->setCBRAlphaValue (cbrAlpha);
+          metSup->setSimulationTimeValue (simTime);
+          metSup->setNodeContainer (allSlUesContainer);
+          metSup->startCheckCBR ();
+        }
     }
 
   /*** 7. Setup interface and application for dynamic nodes ***/
@@ -825,6 +883,8 @@ main (int argc, char *argv[])
     }
 
   EmergencyVehicleAlertHelper.SetAttribute ("SendDENM", BooleanValue (sendDenm));
+  EmergencyVehicleAlertHelper.SetAttribute ("DENMCopies", UintegerValue (denmCopies));
+  EmergencyVehicleAlertHelper.SetAttribute ("DENMCopySpacingMs", DoubleValue (denmCopySpacingMs));
   EmergencyVehicleAlertHelper.SetAttribute ("SigmaMode", StringValue (sigmaMode));
   EmergencyVehicleAlertHelper.SetAttribute ("FixedSigma", DoubleValue (fixedSigma));
   EmergencyVehicleAlertHelper.SetAttribute ("SpeedDropThreshold", DoubleValue (speedDropThreshold));
@@ -951,6 +1011,9 @@ main (int argc, char *argv[])
 
   if(m_metric_sup)
     {
+      // Network-average CBR over the whole run (-1 if CBR measurement was off).
+      double avgCBR = cbrEnabled ? metSup->getAverageCBROverall () : -1.0;
+
       if(csv_name_cumulative!="")
       {
         std::ofstream csv_cum_ofstream;
@@ -965,13 +1028,61 @@ main (int argc, char *argv[])
         {
           // The file does not exist yet
           csv_cum_ofstream.open(full_csv_name);
-          csv_cum_ofstream << "current_txpower_dBm,avg_PRR,avg_latency_ms" << std::endl;
+          csv_cum_ofstream << "current_txpower_dBm,avg_PRR,avg_latency_ms,avg_CBR" << std::endl;
         }
 
-        csv_cum_ofstream << txPower << "," << metSup->getAveragePRR_overall () << "," << metSup->getAverageLatency_overall () << std::endl;
+        csv_cum_ofstream << txPower << "," << metSup->getAveragePRR_overall () << "," << metSup->getAverageLatency_overall () << "," << avgCBR << std::endl;
       }
       std::cout << "Average PRR: " << metSup->getAveragePRR_overall () << std::endl;
       std::cout << "Average latency (ms): " << metSup->getAverageLatency_overall () << std::endl;
+      std::cout << "Average CBR: " << avgCBR << std::endl;
+
+      /* Per-vehicle, per-message-type PRR / latency statistics, e.g.
+       * "veh1 CAM reception ratio, veh1 DENM reception ratio, ...".
+       * Written to <csv_log>_prr_per_vehicle_messagetype.csv and echoed to stdout. */
+      const auto &prrTable = metSup->getAveragePRR_per_vehicle_per_messagetype ();
+      const auto &txTable  = metSup->getNumberTx_per_vehicle_per_messagetype ();
+      const auto &latTable = metSup->getAverageLatency_per_vehicle_per_messagetype ();
+
+      std::string perveh_csv = (csv_name.empty () ? std::string ("run") : csv_name)
+                               + "_prr_per_vehicle_messagetype.csv";
+      std::ofstream perveh_ofs (perveh_csv, std::ofstream::trunc);
+      perveh_ofs << "vehicle,message_type,n_tx,avg_prr,avg_latency_ms" << std::endl;
+
+      std::cout << "Per-vehicle, per-message-type PRR:" << std::endl;
+      for (const auto &vehEntry : prrTable)
+        {
+          uint64_t veh = vehEntry.first;
+          for (const auto &mtEntry : vehEntry.second)
+            {
+              auto mt = mtEntry.first;
+              double prr = mtEntry.second;
+
+              uint64_t ntx = 0;
+              auto txVehIt = txTable.find (veh);
+              if (txVehIt != txTable.end ())
+                {
+                  auto txMtIt = txVehIt->second.find (mt);
+                  if (txMtIt != txVehIt->second.end ()) ntx = txMtIt->second;
+                }
+
+              double lat = 0.0;
+              auto latVehIt = latTable.find (veh);
+              if (latVehIt != latTable.end ())
+                {
+                  auto latMtIt = latVehIt->second.find (mt);
+                  if (latMtIt != latVehIt->second.end ()) lat = latMtIt->second;
+                }
+
+              std::string mtStr = MetricSupervisor::messageTypeToString (mt);
+              perveh_ofs << "veh" << veh << "," << mtStr << "," << ntx << ","
+                         << prr << "," << lat << std::endl;
+              std::cout << "  veh" << veh << " " << mtStr << " reception ratio: "
+                        << prr << " (tx=" << ntx << ", latency=" << lat << " ms)"
+                        << std::endl;
+            }
+        }
+      perveh_ofs.close ();
     }
 
 

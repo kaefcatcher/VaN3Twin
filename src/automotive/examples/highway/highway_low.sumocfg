@@ -1,0 +1,10 @@
+<configuration>
+    <input>
+        <net-file value="highway.net.xml"/>
+        <route-files value="highway_low.rou.xml"/>
+    </input>
+    <time>
+        <begin value="0"/>
+        <end value="50"/>
+    </time>
+</configuration>
